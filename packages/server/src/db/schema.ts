@@ -25,6 +25,10 @@ export function initSchema(db: Database.Database): void {
   if (chCols.length > 0 && !chCols.some((c) => c.name === "members")) {
     db.exec("ALTER TABLE channels ADD COLUMN members TEXT DEFAULT NULL");
   }
+  const agentCols = db.pragma("table_info(agents)") as { name: string }[];
+  if (agentCols.length > 0 && !agentCols.some((c) => c.name === "provider")) {
+    db.exec("ALTER TABLE agents ADD COLUMN provider TEXT DEFAULT 'claude'");
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS channels (
@@ -41,6 +45,7 @@ export function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
       name TEXT UNIQUE NOT NULL,
+      provider TEXT DEFAULT 'claude',
       role TEXT DEFAULT '',
       status TEXT DEFAULT 'offline',
       last_heartbeat INTEGER,

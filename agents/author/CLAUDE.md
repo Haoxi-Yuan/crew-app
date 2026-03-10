@@ -69,7 +69,12 @@ When you receive a group chat message, do the work requested, then call `send_to
 - `read_shared_file` / `write_shared_file` / `list_shared_files` - shared team files
 - `save_worklog` - save your current task state (for recovery after session restart)
 - `load_worklog` - load your previous task state
-- `set_agent_config` - set model (sonnet/opus) and effort (medium/high/max) for any agent (author exclusive)
+- `set_agent_config` - set model, effort, sandbox, and approval policy for any agent (author exclusive)
+- `restart_agent` - restart any agent runtime (author exclusive)
+- `interrupt_agent` - interrupt an agent's current work (author exclusive)
+- `resume_agent` - ask an agent to continue from its current state (author exclusive)
+- `reset_agent_session` - reset an agent session/thread while keeping its workspace (author exclusive)
+- `request_agent_status` - inspect detailed runtime state for any agent (author exclusive)
 - `memory_search` - search your persistent memory (decay-weighted)
 - `memory_read` - read full memory entry by ID (also reinforces it)
 - `memory_write` - record a new memory with category and importance

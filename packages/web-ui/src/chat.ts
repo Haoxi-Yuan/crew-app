@@ -207,7 +207,13 @@ export function renderApprovalCard(approval: ToolApproval): void {
   actions.className = "approval-actions";
   for (const opt of approval.options) {
     const btn = document.createElement("button");
-    btn.className = `approval-btn ${opt.key === "1" ? "approve" : opt.key === "3" ? "reject" : "other"}`;
+    const lowered = `${opt.key} ${opt.label}`.toLowerCase();
+    const tone = lowered.includes("accept") || lowered.includes("approve")
+      ? "approve"
+      : lowered.includes("decline") || lowered.includes("reject") || lowered.includes("cancel")
+        ? "reject"
+        : "other";
+    btn.className = `approval-btn ${tone}`;
     btn.textContent = opt.label;
     btn.addEventListener("click", () => {
       if (onApprovalRespond) onApprovalRespond(approval.agentName, opt.key);

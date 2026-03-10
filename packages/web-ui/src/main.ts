@@ -405,6 +405,7 @@ function renderAgents(): void {
     const ctxPercent = ag.contextPercent ?? 0;
     const borderBg = contextBorderGradient(ctxPercent, color);
     const ctxTitle = ctxPercent > 0 ? ` (context: ${ctxPercent}%)` : "";
+    const providerBadge = ag.provider === "codex" ? "codex" : "";
 
     li.innerHTML = `
       <div class="agent-avatar-wrap" style="background:${borderBg}" title="${esc(ag.name)}${ctxTitle}">
@@ -416,6 +417,7 @@ function renderAgents(): void {
       <div class="agent-info">
         <div class="agent-name-row">
           <span class="agent-name">${esc(ag.name)}</span>
+          ${providerBadge ? `<span class="agent-state">${providerBadge}</span>` : ""}
           ${stateLabel ? `<span class="agent-state">${esc(stateLabel)}</span>` : ""}
         </div>
         ${ag.role ? `<div class="agent-role" title="${esc(ag.role)}">${esc(ag.role)}</div>` : ""}
@@ -479,6 +481,13 @@ function openAgentEdit(ag: Agent): void {
 document.getElementById("add-agent-btn")!.addEventListener("click", () => {
   openModal("Create Agent", `
     <div class="form-group"><label>Name</label><input id="f-ag-name" type="text" placeholder="agent-name"></div>
+    <div class="form-group">
+      <label>Provider</label>
+      <select id="f-ag-provider">
+        <option value="claude">Claude</option>
+        <option value="codex">Codex</option>
+      </select>
+    </div>
     <div class="form-group"><label>Role</label><input id="f-ag-role2" type="text" placeholder="e.g. Backend developer"></div>
     <label class="toggle-label" style="margin-bottom:10px"><input type="checkbox" id="f-ag-wake" checked> Start immediately after creation</label>
     <button class="modal-action-btn" id="f-ag-create">Create</button>
@@ -486,6 +495,7 @@ document.getElementById("add-agent-btn")!.addEventListener("click", () => {
   document.getElementById("f-ag-create")!.addEventListener("click", async () => {
     const name = (document.getElementById("f-ag-name") as HTMLInputElement).value.trim();
     if (!name) return;
+    const provider = (document.getElementById("f-ag-provider") as HTMLSelectElement).value;
     const role = (document.getElementById("f-ag-role2") as HTMLInputElement).value.trim();
     const wake = (document.getElementById("f-ag-wake") as HTMLInputElement).checked;
     const btn = document.getElementById("f-ag-create") as HTMLButtonElement;
@@ -495,7 +505,7 @@ document.getElementById("add-agent-btn")!.addEventListener("click", () => {
       const r = await fetch("/api/agents/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, role, wake }),
+        body: JSON.stringify({ name, provider, role, wake }),
       });
       const data = await r.json();
       if (!r.ok) {
@@ -712,7 +722,7 @@ function handleWsEvent(event: WsEvent): void {
       break;
     }
     case "agent:status": {
-      const data = event.data as { name: string; status: string; role?: string };
+      const data = event.data as { name: string; status: string; role?: string; provider?: Agent["provider"] };
       if (data.status === "removed") {
         agents = agents.filter((a) => a.name !== data.name);
       } else {
@@ -720,8 +730,17 @@ function handleWsEvent(event: WsEvent): void {
         if (existing) {
           existing.status = data.status as Agent["status"];
           if (data.role !== undefined) existing.role = data.role;
+          if (data.provider !== undefined) existing.provider = data.provider;
         } else {
-          agents.push({ id: "", name: data.name, role: data.role || "", status: data.status as Agent["status"], last_heartbeat: Date.now(), registered_at: Date.now() });
+          agents.push({
+            id: "",
+            name: data.name,
+            provider: data.provider,
+            role: data.role || "",
+            status: data.status as Agent["status"],
+            last_heartbeat: Date.now(),
+            registered_at: Date.now(),
+          });
         }
       }
       renderAgents();
@@ -745,6 +764,15 @@ function handleWsEvent(event: WsEvent): void {
       const ch = channels.find(c => c.id === currentChannelId);
       if (ch?.type === "dm" && ch.name === data.name) {
         updateTerminalContent(data.content);
+      }
+      break;
+    }
+    case "agent:context": {
+      const data = event.data as { name: string; contextPercent: number };
+      const ag = agents.find((a) => a.name === data.name);
+      if (ag) {
+        ag.contextPercent = data.contextPercent;
+        renderAgents();
       }
       break;
     }

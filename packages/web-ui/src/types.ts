@@ -1,6 +1,7 @@
 export interface Agent {
   id: string;
   name: string;
+  provider?: "claude" | "codex";
   role: string;
   status: "online" | "offline" | "busy";
   tmuxState?: "idle" | "busy" | "approval_pending" | "no_session";
@@ -42,13 +43,14 @@ export interface SharedFile {
 
 export interface ToolApproval {
   id: string;
+  provider?: "claude" | "codex";
   agentName: string;
   toolServer: string;
   toolName: string;
   params: string;
   description: string;
   options: { key: string; label: string }[];
-  promptType: "tool_use" | "mcp_setup";
+  promptType: "tool_use" | "mcp_setup" | "command_execution" | "file_change" | "skill_request" | "user_input";
   detectedAt: number;
 }
 

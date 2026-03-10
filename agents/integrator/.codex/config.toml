@@ -1,0 +1,6 @@
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+
+[mcp_servers.claude_crew]
+command = "/Users/yuan/.nvm/versions/node/v22.14.0/bin/node"
+args = ["/Users/yuan/Projects/claude-crew/packages/mcp-bridge/dist/index.js", "integrator", "Research operations integrator responsible for aligning evidence, analysis outputs, manuscript drafts, and team handoffs."]

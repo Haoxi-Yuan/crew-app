@@ -12,6 +12,8 @@ import approvalsRouter from "./approvals.js";
 import memoryRouter from "./memory.js";
 import { getDb, type PendingMentionRow, type MessageRow } from "../db/index.js";
 import { PROJECT_ROOT } from "../config.js";
+import { DEFAULT_PROVIDER, getProvider } from "../agent-runtime.js";
+import { startCodexAgent } from "../providers/codex.js";
 
 const router: RouterType = Router();
 
@@ -72,7 +74,7 @@ router.post("/mentions/:id/ack", (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// Wake agent: start Claude Code in tmux session
+// Wake agent: start provider runtime
 router.post("/wake", (req: Request, res: Response) => {
   const { name } = req.body as { name?: string };
   if (!name) {
@@ -86,6 +88,14 @@ router.post("/wake", (req: Request, res: Response) => {
 
   if (!fs.existsSync(agentDir)) {
     res.status(404).json({ error: `Agent workspace not found: ${name}. Use 'crew add ${name} <role>' first.` });
+    return;
+  }
+
+  const provider = getProvider(name);
+  if (provider === "codex") {
+    startCodexAgent(name)
+      .then(() => res.json({ ok: true, name, provider }))
+      .catch((err) => res.status(500).json({ error: `Failed to wake Codex agent: ${(err as Error).message}` }));
     return;
   }
 
@@ -129,7 +139,7 @@ router.post("/wake", (req: Request, res: Response) => {
         res.status(500).json({ error: `Failed to wake agent: ${err.message}` });
         return;
       }
-      res.json({ ok: true, name });
+      res.json({ ok: true, name, provider });
     });
   });
 });
@@ -152,30 +162,43 @@ router.post("/wake-all", (_req: Request, res: Response) => {
     return;
   }
 
-  // Find claude path
-  let claudePath = "";
-  try { claudePath = execFileSync("which", ["claude"]).toString().trim(); } catch {}
-  if (!claudePath) {
-    const nvmDir = path.join(process.env.HOME || "", ".nvm/versions/node");
-    try {
-      for (const d of fs.readdirSync(nvmDir)) {
-        const p = path.join(nvmDir, d, "bin/claude");
-        if (fs.existsSync(p)) { claudePath = p; break; }
-      }
-    } catch {}
-  }
-  if (!claudePath) {
-    res.status(500).json({ error: "Claude Code CLI not found" });
-    return;
-  }
-
   let launched = 0;
   let skipped = 0;
   let remaining = agentNames.length;
 
+  let claudePath = "";
+
   for (const name of agentNames) {
     const agentDir = path.join(agentsDir, name);
     const session = `crew-${name}`;
+    const provider = getProvider(name);
+
+    if (provider === "codex") {
+      startCodexAgent(name)
+        .then(() => {
+          launched++;
+          remaining--;
+          if (remaining === 0) res.json({ ok: true, launched, skipped });
+        })
+        .catch(() => {
+          remaining--;
+          if (remaining === 0) res.json({ ok: true, launched, skipped });
+        });
+      continue;
+    }
+
+    if (!claudePath) {
+      try { claudePath = execFileSync("which", ["claude"]).toString().trim(); } catch {}
+      if (!claudePath) {
+        const nvmDir = path.join(process.env.HOME || "", ".nvm/versions/node");
+        try {
+          for (const d of fs.readdirSync(nvmDir)) {
+            const p = path.join(nvmDir, d, "bin/claude");
+            if (fs.existsSync(p)) { claudePath = p; break; }
+          }
+        } catch {}
+      }
+    }
 
     execFile("tmux", ["has-session", "-t", session], (checkErr) => {
       if (!checkErr) {
@@ -209,13 +232,23 @@ router.get("/workspaces", (_req: Request, res: Response) => {
 
   const result = agents.map((name) => {
     const mcpPath = path.join(agentsDir, name, ".mcp.json");
+    const provider = fs.existsSync(path.join(agentsDir, name, ".codex/config.toml")) ? "codex" : DEFAULT_PROVIDER;
     let role = "";
-    try {
-      const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf-8"));
-      const args = mcp.mcpServers?.["claude-crew"]?.args;
-      if (Array.isArray(args) && args.length > 2) role = args[args.length - 1];
-    } catch {}
-    return { name, role, workspace: path.join(agentsDir, name) };
+    if (provider === "codex") {
+      const agentsMd = path.join(agentsDir, name, "AGENTS.md");
+      try {
+        const content = fs.readFileSync(agentsMd, "utf-8");
+        const match = content.match(/^Role:\s*(.+)$/m);
+        if (match) role = match[1].trim();
+      } catch {}
+    } else {
+      try {
+        const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf-8"));
+        const args = mcp.mcpServers?.["claude-crew"]?.args;
+        if (Array.isArray(args) && args.length > 2) role = args[args.length - 1];
+      } catch {}
+    }
+    return { name, provider, role, workspace: path.join(agentsDir, name) };
   });
 
   res.json(result);

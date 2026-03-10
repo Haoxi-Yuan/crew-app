@@ -19,6 +19,7 @@ export function getDb(): Database.Database {
 export interface AgentRow {
   id: string;
   name: string;
+  provider: string;
   role: string;
   status: string;
   last_heartbeat: number | null;

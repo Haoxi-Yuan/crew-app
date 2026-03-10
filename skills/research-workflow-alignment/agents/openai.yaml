@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Workflow Alignment"
+  short_description: "Align research-team outputs and handoffs"
+  default_prompt: "Align the latest specialist outputs, identify conflicts, decide the current source of truth, and produce the next clean handoff for the team."

@@ -322,22 +322,124 @@ server.tool(
 // Tool: set_agent_config (author only)
 server.tool(
   "set_agent_config",
-  "Set model and effort for an agent. Only usable by the author agent. Model: sonnet or opus. Effort: medium, high, or max. The agent will be restarted to apply changes.",
+  "Set runtime configuration for an agent. Only usable by the author agent. Claude agents support sonnet/opus plus effort. Codex agents also support sandbox and approval policy.",
   {
     agent_name: z.string().describe("Target agent name"),
-    model: z.enum(["sonnet", "opus"]).optional().describe("Model to use (sonnet or opus)"),
+    model: z.string().optional().describe("Model to use"),
     effort: z.enum(["medium", "high", "max"]).optional().describe("Reasoning effort level (medium, high, or max)"),
+    approval_policy: z.enum(["untrusted", "on-request", "never"]).optional().describe("Tool approval policy"),
+    sandbox_mode: z.enum(["read-only", "workspace-write", "danger-full-access"]).optional().describe("Sandbox mode"),
   },
-  async ({ agent_name, model, effort }) => {
+  async ({ agent_name, model, effort, approval_policy, sandbox_mode }) => {
     try {
-      const result = await client.setAgentConfig(agentName, agent_name, model, effort, true);
+      const result = await client.setAgentConfig(
+        agentName,
+        agent_name,
+        model,
+        effort,
+        approval_policy,
+        sandbox_mode,
+        true
+      );
       const parts = [];
       if (model) parts.push(`model=${model}`);
       if (effort) parts.push(`effort=${effort}`);
+      if (approval_policy) parts.push(`approval_policy=${approval_policy}`);
+      if (sandbox_mode) parts.push(`sandbox_mode=${sandbox_mode}`);
       return {
         content: [{
           type: "text",
           text: `Config updated for ${agent_name}: ${parts.join(", ")}. ${result.restarted ? "Agent restarted." : "Will apply on next restart."}`,
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "restart_agent",
+  "Restart an agent runtime. Only usable by the author agent.",
+  { agent_name: z.string().describe("Target agent name") },
+  async ({ agent_name }) => {
+    try {
+      const result = await client.restartAgent(agentName, agent_name);
+      return { content: [{ type: "text", text: result.ok ? `Restarted ${agent_name}.` : `Failed to restart ${agent_name}.` }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "interrupt_agent",
+  "Interrupt the current work of an agent. Only usable by the author agent.",
+  { agent_name: z.string().describe("Target agent name") },
+  async ({ agent_name }) => {
+    try {
+      const result = await client.interruptAgent(agentName, agent_name);
+      return { content: [{ type: "text", text: result.ok ? `Interrupted ${agent_name}.` : `No active work to interrupt for ${agent_name}.` }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "resume_agent",
+  "Resume an interrupted or paused agent. Only usable by the author agent.",
+  { agent_name: z.string().describe("Target agent name") },
+  async ({ agent_name }) => {
+    try {
+      const result = await client.resumeAgent(agentName, agent_name);
+      return { content: [{ type: "text", text: result.ok ? `Resume requested for ${agent_name}.` : `Failed to resume ${agent_name}.` }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "reset_agent_session",
+  "Reset an agent session while preserving its workspace. Only usable by the author agent.",
+  { agent_name: z.string().describe("Target agent name") },
+  async ({ agent_name }) => {
+    try {
+      const result = await client.resetAgentSession(agentName, agent_name);
+      return { content: [{ type: "text", text: result.ok ? `Session reset for ${agent_name}.` : `Failed to reset ${agent_name}.` }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "request_agent_status",
+  "Get detailed runtime status for an agent. Only usable by the author agent.",
+  { agent_name: z.string().describe("Target agent name") },
+  async ({ agent_name }) => {
+    try {
+      const result = await client.getAgentRuntimeStatus(agent_name);
+      return {
+        content: [{
+          type: "text",
+          text: `Agent ${result.name} [provider=${result.provider}] state=${result.runtimeState}, context=${result.contextPercent}%\nconfig=${JSON.stringify(result.config)}`,
         }],
       };
     } catch (err) {

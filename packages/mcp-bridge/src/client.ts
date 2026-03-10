@@ -23,6 +23,7 @@ export interface ChatMessage {
 export interface AgentInfo {
   id: string;
   name: string;
+  provider?: string;
   role: string;
   status: string;
   last_heartbeat: number | null;
@@ -37,26 +38,43 @@ export interface SharedFileInfo {
   size_bytes: number;
 }
 
+const MAX_RETRIES = 5;
+const RETRY_DELAYS = [500, 1000, 2000, 4000, 8000];
+
 async function request(path: string, options?: RequestInit): Promise<unknown> {
   const url = `${BASE_URL}/api${path}`;
-  try {
-    const resp = await fetch(url, {
-      ...options,
-      headers: { "Content-Type": "application/json", ...options?.headers },
-    });
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`HTTP ${resp.status}: ${body}`);
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const resp = await fetch(url, {
+        ...options,
+        headers: { "Content-Type": "application/json", ...options?.headers },
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${body}`);
+      }
+      return resp.json();
+    } catch (err) {
+      lastError = err as Error;
+      const isConnectionError =
+        (err instanceof TypeError && err.message.includes("fetch")) ||
+        (err instanceof Error && /ECONNREFUSED|ECONNRESET|EPIPE|socket hang up/i.test(err.message));
+
+      if (!isConnectionError || attempt === MAX_RETRIES) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt] || 8000));
     }
-    return resp.json();
-  } catch (err) {
-    if (err instanceof TypeError && err.message.includes("fetch")) {
-      throw new Error(
-        "Cannot connect to Claude Crew server. Is it running? Start with: crew start"
-      );
-    }
-    throw err;
   }
+
+  if (lastError instanceof TypeError && lastError.message.includes("fetch")) {
+    throw new Error(
+      "Cannot connect to Claude Crew server after retries. Is it running? Start with: crew start"
+    );
+  }
+  throw lastError;
 }
 
 export async function register(name: string, role: string): Promise<void> {
@@ -186,12 +204,65 @@ export async function setAgentConfig(
   targetAgent: string,
   model?: string,
   effort?: string,
+  approvalPolicy?: string,
+  sandboxMode?: string,
   restart?: boolean
-): Promise<{ ok: boolean; name: string; model?: string; effort?: string; restarted: boolean }> {
+): Promise<{ ok: boolean; name: string; provider?: string; model?: string; effort?: string; approvalPolicy?: string; sandboxMode?: string; restarted: boolean }> {
   return (await request(`/agents/${encodeURIComponent(targetAgent)}/config`, {
     method: "PUT",
-    body: JSON.stringify({ model, effort, requested_by: callerName, restart }),
-  })) as { ok: boolean; name: string; model?: string; effort?: string; restarted: boolean };
+    body: JSON.stringify({
+      model,
+      effort,
+      approval_policy: approvalPolicy,
+      sandbox_mode: sandboxMode,
+      requested_by: callerName,
+      restart,
+    }),
+  })) as { ok: boolean; name: string; provider?: string; model?: string; effort?: string; approvalPolicy?: string; sandboxMode?: string; restarted: boolean };
+}
+
+export async function restartAgent(callerName: string, targetAgent: string): Promise<{ ok: boolean }> {
+  return (await request(`/agents/${encodeURIComponent(targetAgent)}/restart`, {
+    method: "POST",
+    body: JSON.stringify({ requested_by: callerName }),
+  })) as { ok: boolean };
+}
+
+export async function interruptAgent(callerName: string, targetAgent: string): Promise<{ ok: boolean }> {
+  return (await request(`/agents/${encodeURIComponent(targetAgent)}/interrupt`, {
+    method: "POST",
+    body: JSON.stringify({ requested_by: callerName }),
+  })) as { ok: boolean };
+}
+
+export async function resumeAgent(callerName: string, targetAgent: string): Promise<{ ok: boolean }> {
+  return (await request(`/agents/${encodeURIComponent(targetAgent)}/resume`, {
+    method: "POST",
+    body: JSON.stringify({ requested_by: callerName }),
+  })) as { ok: boolean };
+}
+
+export async function resetAgentSession(callerName: string, targetAgent: string): Promise<{ ok: boolean }> {
+  return (await request(`/agents/${encodeURIComponent(targetAgent)}/reset-session`, {
+    method: "POST",
+    body: JSON.stringify({ requested_by: callerName }),
+  })) as { ok: boolean };
+}
+
+export async function getAgentRuntimeStatus(targetAgent: string): Promise<{
+  name: string;
+  provider: string;
+  runtimeState: string;
+  contextPercent: number;
+  config: Record<string, unknown>;
+}> {
+  return (await request(`/agents/${encodeURIComponent(targetAgent)}/runtime-status`)) as {
+    name: string;
+    provider: string;
+    runtimeState: string;
+    contextPercent: number;
+    config: Record<string, unknown>;
+  };
 }
 
 export async function saveWorklog(

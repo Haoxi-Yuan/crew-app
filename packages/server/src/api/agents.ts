@@ -9,6 +9,26 @@ import { getDb, type AgentRow } from "../db/index.js";
 import { broadcast } from "../ws/handler.js";
 import { PROJECT_ROOT, WORKLOG_DIR } from "../config.js";
 import { getAllAgentTmuxStates, getAllAgentContextPercents, getAgentTerminalContent } from "../tmux-monitor.js";
+import {
+  clearAgentMetadataKeys,
+  DEFAULT_PROVIDER,
+  getAgentRuntimeConfig,
+  getProvider,
+  type AgentProvider,
+  type ApprovalPolicy,
+  type SandboxMode,
+} from "../agent-runtime.js";
+import {
+  getCodexContextPercent,
+  getCodexState,
+  getCodexTerminalContent,
+  interruptCodexAgent,
+  restartCodexAgent,
+  resumeCodexAgent,
+  sendManualInputToCodexAgent,
+  startCodexAgent,
+  stopCodexAgent,
+} from "../providers/codex.js";
 
 const execFileAsync = promisify(execFile);
 const AGENTS_DIR = path.join(PROJECT_ROOT, "agents");
@@ -18,6 +38,9 @@ const router: RouterType = Router();
 
 // --- Helper: find node binary ---
 function findNodePath(): string {
+  if (process.execPath && fs.existsSync(process.execPath)) {
+    return process.execPath;
+  }
   try {
     return execFileSync("which", ["node"]).toString().trim();
   } catch { /* ignore */ }
@@ -62,29 +85,8 @@ function findClaudePath(): string {
   return "";
 }
 
-// --- Helper: create workspace (.mcp.json + CLAUDE.md) ---
-function createWorkspace(name: string, role: string): void {
-  const agentDir = path.join(AGENTS_DIR, name);
-  fs.mkdirSync(agentDir, { recursive: true });
-
-  const nodePath = findNodePath();
-
-  // Write .mcp.json
-  const mcpConfig = {
-    mcpServers: {
-      "claude-crew": {
-        command: nodePath,
-        args: [BRIDGE_PATH, name, role],
-      },
-    },
-  };
-  fs.writeFileSync(
-    path.join(agentDir, ".mcp.json"),
-    JSON.stringify(mcpConfig, null, 2) + "\n"
-  );
-
-  // Write CLAUDE.md
-  const claudeMd = `# Agent: ${name}
+function createClaudeInstructions(name: string, role: string): string {
+  return `# Agent: ${name}
 Role: ${role}
 
 You are "${name}" in the Claude Crew multi-agent team.
@@ -114,11 +116,77 @@ When you receive a group chat message, do the work requested, then call \`send_t
 - You can work on any files on this machine using standard tools
 - Do NOT @mention yourself in messages
 `;
-  fs.writeFileSync(path.join(agentDir, "CLAUDE.md"), claudeMd);
+}
+
+function createCodexInstructions(name: string, role: string): string {
+  return `# Agent: ${name}
+Role: ${role}
+
+You are "${name}" in the Claude Crew multi-agent team.
+
+Messages from the group chat will be sent to you directly in the format:
+[sender in group chat]: message content
+
+## How to respond
+When you receive a group chat message, do the work requested, then use \`send_to_chat\` to post the result back to the team chat.
+
+## Available tools
+- \`send_to_chat\`
+- \`read_chat\`
+- \`check_mentions\`
+- \`list_agents\`
+- \`read_shared_file\` / \`write_shared_file\` / \`list_shared_files\`
+- \`save_worklog\` / \`load_worklog\`
+
+## Rules
+- ALWAYS reply via \`send_to_chat\`
+- Keep messages concise and put large output in shared files
+- Do NOT @mention yourself
+`;
+}
+
+function createCodexConfigToml(name: string, role: string): string {
+  const nodePath = findNodePath();
+  return `model = "gpt-5.4"
+model_reasoning_effort = "high"
+
+[mcp_servers.claude_crew]
+command = "${nodePath.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"
+args = ["${BRIDGE_PATH.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}", "${name.replaceAll("\"", "\\\"")}", "${role.replaceAll("\"", "\\\"")}"]
+`;
+}
+
+// --- Helper: create workspace ---
+function createWorkspace(name: string, role: string, provider: AgentProvider): void {
+  const agentDir = path.join(AGENTS_DIR, name);
+  fs.mkdirSync(agentDir, { recursive: true });
+
+  if (provider === "codex") {
+    fs.mkdirSync(path.join(agentDir, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(agentDir, ".codex/config.toml"), createCodexConfigToml(name, role));
+    fs.writeFileSync(path.join(agentDir, "AGENTS.md"), createCodexInstructions(name, role));
+    return;
+  }
+
+  const nodePath = findNodePath();
+  const mcpConfig = {
+    mcpServers: {
+      "claude-crew": {
+        command: nodePath,
+        args: [BRIDGE_PATH, name, role],
+      },
+    },
+  };
+  fs.writeFileSync(path.join(agentDir, ".mcp.json"), JSON.stringify(mcpConfig, null, 2) + "\n");
+  fs.writeFileSync(path.join(agentDir, "CLAUDE.md"), createClaudeInstructions(name, role));
 }
 
 // --- Helper: kill tmux session + bridge processes ---
 async function killAgentProcesses(name: string): Promise<void> {
+  if (getProvider(name) === "codex") {
+    await stopCodexAgent(name);
+    return;
+  }
   const session = `crew-${name}`;
 
   // Kill tmux session
@@ -148,6 +216,7 @@ router.post("/register", (req: Request, res: Response) => {
 
   const db = getDb();
   const now = Date.now();
+  const provider = getProvider(name);
 
   const existing = db
     .prepare("SELECT id FROM agents WHERE name = ?")
@@ -157,23 +226,28 @@ router.post("/register", (req: Request, res: Response) => {
     db.prepare(
       "UPDATE agents SET status = 'online', role = ?, last_heartbeat = ? WHERE name = ?"
     ).run(role || "", now, name);
-    broadcast({ type: "agent:status", data: { name, status: "online", role: role || "" } });
+    broadcast({ type: "agent:status", data: { name, status: "online", role: role || "", provider } });
     res.json({ id: existing.id, name, status: "online" });
     return;
   }
 
   const id = randomUUID();
   db.prepare(
-    "INSERT INTO agents (id, name, role, status, last_heartbeat, registered_at) VALUES (?, ?, ?, 'online', ?, ?)"
-  ).run(id, name, role || "", now, now);
+    "INSERT INTO agents (id, name, provider, role, status, last_heartbeat, registered_at) VALUES (?, ?, ?, ?, 'online', ?, ?)"
+  ).run(id, name, provider, role || "", now, now);
 
-  broadcast({ type: "agent:status", data: { name, status: "online", role: role || "" } });
+  broadcast({ type: "agent:status", data: { name, status: "online", role: role || "", provider } });
   res.json({ id, name, status: "online" });
 });
 
 // POST /agents/create - Create workspace + register + optionally wake
 router.post("/create", (req: Request, res: Response) => {
-  const { name, role, wake } = req.body as { name?: string; role?: string; wake?: boolean };
+  const { name, role, wake, provider } = req.body as {
+    name?: string;
+    role?: string;
+    wake?: boolean;
+    provider?: AgentProvider;
+  };
   if (!name || typeof name !== "string") {
     res.status(400).json({ error: "name is required" });
     return;
@@ -187,6 +261,7 @@ router.post("/create", (req: Request, res: Response) => {
 
   const agentDir = path.join(AGENTS_DIR, name);
   const agentRole = role || "";
+  const agentProvider: AgentProvider = provider === "codex" ? "codex" : DEFAULT_PROVIDER;
 
   // Check if bridge is built
   if (!fs.existsSync(BRIDGE_PATH)) {
@@ -196,7 +271,7 @@ router.post("/create", (req: Request, res: Response) => {
 
   // Create workspace
   try {
-    createWorkspace(name, agentRole);
+    createWorkspace(name, agentRole, agentProvider);
   } catch (err) {
     res.status(500).json({ error: `Failed to create workspace: ${(err as Error).message}` });
     return;
@@ -209,22 +284,33 @@ router.post("/create", (req: Request, res: Response) => {
   let agentId: string;
 
   if (existing) {
-    db.prepare("UPDATE agents SET role = ?, status = 'offline' WHERE name = ?").run(agentRole, name);
+    db.prepare("UPDATE agents SET provider = ?, role = ?, status = 'offline' WHERE name = ?").run(agentProvider, agentRole, name);
     agentId = existing.id;
   } else {
     agentId = randomUUID();
     db.prepare(
-      "INSERT INTO agents (id, name, role, status, last_heartbeat, registered_at) VALUES (?, ?, ?, 'offline', ?, ?)"
-    ).run(agentId, name, agentRole, now, now);
+      "INSERT INTO agents (id, name, provider, role, status, last_heartbeat, registered_at) VALUES (?, ?, ?, ?, 'offline', ?, ?)"
+    ).run(agentId, name, agentProvider, agentRole, now, now);
   }
 
-  broadcast({ type: "agent:status", data: { name, status: "offline", role: agentRole } });
+  broadcast({ type: "agent:status", data: { name, status: "offline", role: agentRole, provider: agentProvider } });
 
-  // Optionally wake (start tmux session)
+  // Optionally wake (start provider runtime)
   if (wake) {
+    if (agentProvider === "codex") {
+      startCodexAgent(name)
+        .then(() => {
+          res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir, woke: true });
+        })
+        .catch((err) => {
+          res.status(500).json({ ok: false, id: agentId, name, provider: agentProvider, workspace: agentDir, woke: false, wakeError: (err as Error).message });
+        });
+      return;
+    }
+
     const claudePath = findClaudePath();
     if (!claudePath) {
-      res.json({ ok: true, id: agentId, name, workspace: agentDir, wakeError: "Claude Code CLI not found" });
+      res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir, wakeError: "Claude Code CLI not found" });
       return;
     }
 
@@ -235,13 +321,14 @@ router.post("/create", (req: Request, res: Response) => {
         ok: true,
         id: agentId,
         name,
+        provider: agentProvider,
         workspace: agentDir,
         woke: !err,
         wakeError: err ? err.message : undefined,
       });
     });
   } else {
-    res.json({ ok: true, id: agentId, name, workspace: agentDir });
+    res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir });
   }
 });
 
@@ -277,7 +364,7 @@ router.post("/deregister", (req: Request, res: Response) => {
 
   const db = getDb();
   db.prepare("UPDATE agents SET status = 'offline' WHERE name = ?").run(name);
-  broadcast({ type: "agent:status", data: { name, status: "offline" } });
+  broadcast({ type: "agent:status", data: { name, status: "offline", provider: getProvider(name) } });
   res.json({ ok: true });
 });
 
@@ -285,14 +372,14 @@ router.post("/deregister", (req: Request, res: Response) => {
 router.get("/", (_req: Request, res: Response) => {
   const db = getDb();
   const agents = db
-    .prepare("SELECT id, name, role, status, last_heartbeat, registered_at FROM agents ORDER BY name")
+    .prepare("SELECT id, name, provider, role, status, last_heartbeat, registered_at, metadata FROM agents ORDER BY name")
     .all() as AgentRow[];
   const tmuxStates = getAllAgentTmuxStates();
   const contextPercents = getAllAgentContextPercents();
   const result = agents.map((a) => ({
     ...a,
-    tmuxState: tmuxStates.get(a.name) || "no_session",
-    contextPercent: contextPercents.get(a.name) || 0,
+    tmuxState: a.provider === "codex" ? getCodexState(a.name) : (tmuxStates.get(a.name) || "no_session"),
+    contextPercent: a.provider === "codex" ? getCodexContextPercent(a.name) : (contextPercents.get(a.name) || 0),
   }));
   res.json(result);
 });
@@ -300,7 +387,9 @@ router.get("/", (_req: Request, res: Response) => {
 // GET /agents/:name/terminal - Get current terminal content for an agent
 router.get("/:name/terminal", (_req: Request, res: Response) => {
   const { name } = _req.params;
-  const content = getAgentTerminalContent(name as string);
+  const content = getProvider(name as string) === "codex"
+    ? getCodexTerminalContent(name as string)
+    : getAgentTerminalContent(name as string);
   res.json({ name, content });
 });
 
@@ -314,6 +403,16 @@ router.post("/:name/terminal/input", async (req: Request, res: Response) => {
   }
 
   const sessionName = `crew-${name}`;
+
+  if (getProvider(name as string) === "codex") {
+    try {
+      await sendManualInputToCodexAgent(name as string, input, type);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: `Failed to send input to Codex agent: ${(err as Error).message}` });
+    }
+    return;
+  }
 
   try {
     await execFileAsync("tmux", ["has-session", "-t", sessionName]);
@@ -401,8 +500,10 @@ router.put("/:name/worklog", (req: Request, res: Response) => {
 
 // --- Agent config: model and effort ---
 
-const ALLOWED_MODELS = ["sonnet", "opus"] as const;
+const ALLOWED_CLAUDE_MODELS = ["sonnet", "opus"] as const;
 const ALLOWED_EFFORTS = ["medium", "high", "max"] as const;
+const ALLOWED_APPROVAL_POLICIES: ApprovalPolicy[] = ["untrusted", "on-request", "never"];
+const ALLOWED_SANDBOX_MODES: SandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
 
 export interface AgentConfig {
   model?: string;
@@ -434,12 +535,15 @@ export function buildClaudeCmd(agentDir: string, claudePath: string, agentName: 
 // PUT /agents/:name/config - Set model and effort (author only)
 router.put("/:name/config", async (req: Request, res: Response) => {
   const { name } = req.params;
-  const { model, effort, requested_by, restart } = req.body as {
+  const { model, effort, approval_policy, sandbox_mode, requested_by, restart } = req.body as {
     model?: string;
     effort?: string;
+    approval_policy?: ApprovalPolicy;
+    sandbox_mode?: SandboxMode;
     requested_by?: string;
     restart?: boolean;
   };
+  const provider = getProvider(name as string);
 
   // Only author can change agent config
   if (requested_by !== "author") {
@@ -448,14 +552,22 @@ router.put("/:name/config", async (req: Request, res: Response) => {
   }
 
   // Validate model
-  if (model !== undefined && !ALLOWED_MODELS.includes(model as typeof ALLOWED_MODELS[number])) {
-    res.status(400).json({ error: `Invalid model. Allowed: ${ALLOWED_MODELS.join(", ")}` });
+  if (provider === "claude" && model !== undefined && !ALLOWED_CLAUDE_MODELS.includes(model as typeof ALLOWED_CLAUDE_MODELS[number])) {
+    res.status(400).json({ error: `Invalid model. Allowed: ${ALLOWED_CLAUDE_MODELS.join(", ")}` });
     return;
   }
 
   // Validate effort
   if (effort !== undefined && !ALLOWED_EFFORTS.includes(effort as typeof ALLOWED_EFFORTS[number])) {
     res.status(400).json({ error: `Invalid effort. Allowed: ${ALLOWED_EFFORTS.join(", ")}` });
+    return;
+  }
+  if (approval_policy !== undefined && !ALLOWED_APPROVAL_POLICIES.includes(approval_policy)) {
+    res.status(400).json({ error: `Invalid approval_policy. Allowed: ${ALLOWED_APPROVAL_POLICIES.join(", ")}` });
+    return;
+  }
+  if (sandbox_mode !== undefined && !ALLOWED_SANDBOX_MODES.includes(sandbox_mode)) {
+    res.status(400).json({ error: `Invalid sandbox_mode. Allowed: ${ALLOWED_SANDBOX_MODES.join(", ")}` });
     return;
   }
 
@@ -471,35 +583,159 @@ router.put("/:name/config", async (req: Request, res: Response) => {
   try { meta = JSON.parse(existing.metadata); } catch {}
   if (model !== undefined) meta.model = model;
   if (effort !== undefined) meta.effort = effort;
+  if (approval_policy !== undefined) meta.approvalPolicy = approval_policy;
+  if (sandbox_mode !== undefined) meta.sandboxMode = sandbox_mode;
 
   db.prepare("UPDATE agents SET metadata = ? WHERE name = ?").run(JSON.stringify(meta), name);
 
   // Broadcast config change
   broadcast({
     type: "agent:config",
-    data: { name, model: meta.model, effort: meta.effort },
+    data: {
+      name,
+      provider,
+      model: meta.model,
+      effort: meta.effort,
+      approvalPolicy: meta.approvalPolicy,
+      sandboxMode: meta.sandboxMode,
+    },
   });
 
   // Optionally restart the agent to apply new config
   if (restart) {
-    const session = `crew-${name}`;
     try {
-      await execFileAsync("tmux", ["has-session", "-t", session]);
-      await killAgentProcesses(name as string);
-      await new Promise((r) => setTimeout(r, 2000));
+      if (provider === "codex") {
+        await restartCodexAgent(name as string);
+      } else {
+        const session = `crew-${name}`;
+        await execFileAsync("tmux", ["has-session", "-t", session]);
+        await killAgentProcesses(name as string);
+        await new Promise((r) => setTimeout(r, 2000));
 
-      const claudePath = findClaudePath();
-      if (claudePath) {
-        const agentDir = path.join(AGENTS_DIR, name as string);
-        if (fs.existsSync(agentDir)) {
-          const cmd = buildClaudeCmd(agentDir, claudePath, name as string);
-          await execFileAsync("tmux", ["new-session", "-d", "-s", session, cmd]);
+        const claudePath = findClaudePath();
+        if (claudePath) {
+          const agentDir = path.join(AGENTS_DIR, name as string);
+          if (fs.existsSync(agentDir)) {
+            const cmd = buildClaudeCmd(agentDir, claudePath, name as string);
+            await execFileAsync("tmux", ["new-session", "-d", "-s", session, cmd]);
+          }
         }
       }
-    } catch { /* agent might not be running, config still saved */ }
+    } catch {
+      // Agent might not be running; config still saved.
+    }
   }
 
-  res.json({ ok: true, name, model: meta.model, effort: meta.effort, restarted: !!restart });
+  res.json({
+    ok: true,
+    name,
+    provider,
+    model: meta.model,
+    effort: meta.effort,
+    approvalPolicy: meta.approvalPolicy,
+    sandboxMode: meta.sandboxMode,
+    restarted: !!restart,
+  });
+});
+
+router.get("/:name/runtime-status", (req: Request, res: Response) => {
+  const { name } = req.params;
+  const provider = getProvider(name as string);
+  const tmuxStates = getAllAgentTmuxStates();
+  const contextPercents = getAllAgentContextPercents();
+  const config = getAgentRuntimeConfig(name as string);
+
+  res.json({
+    name,
+    provider,
+    runtimeState: provider === "codex" ? getCodexState(name as string) : (tmuxStates.get(name as string) || "no_session"),
+    contextPercent: provider === "codex" ? getCodexContextPercent(name as string) : (contextPercents.get(name as string) || 0),
+    config,
+  });
+});
+
+async function authorOnlyAction(req: Request, res: Response, action: () => Promise<boolean>): Promise<void> {
+  const { requested_by } = req.body as { requested_by?: string };
+  if (requested_by !== "author") {
+    res.status(403).json({ error: "Only the author agent can control agent runtime" });
+    return;
+  }
+
+  try {
+    const ok = await action();
+    res.json({ ok });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+}
+
+router.post("/:name/restart", async (req: Request, res: Response) => {
+  const { name } = req.params;
+  const provider = getProvider(name as string);
+  await authorOnlyAction(req, res, async () => {
+    if (provider === "codex") {
+      return restartCodexAgent(name as string);
+    }
+    const session = `crew-${name}`;
+    await execFileAsync("tmux", ["has-session", "-t", session]);
+    await killAgentProcesses(name as string);
+    await new Promise((r) => setTimeout(r, 2000));
+    const claudePath = findClaudePath();
+    if (!claudePath) {
+      throw new Error("Claude Code CLI not found");
+    }
+    const agentDir = path.join(AGENTS_DIR, name as string);
+    const cmd = buildClaudeCmd(agentDir, claudePath, name as string);
+    await execFileAsync("tmux", ["new-session", "-d", "-s", session, cmd]);
+    return true;
+  });
+});
+
+router.post("/:name/interrupt", async (req: Request, res: Response) => {
+  const { name } = req.params;
+  const provider = getProvider(name as string);
+  await authorOnlyAction(req, res, async () => {
+    if (provider === "codex") {
+      return interruptCodexAgent(name as string);
+    }
+    await execFileAsync("tmux", ["send-keys", "-t", `crew-${name}`, "C-c"]);
+    return true;
+  });
+});
+
+router.post("/:name/resume", async (req: Request, res: Response) => {
+  const { name } = req.params;
+  const provider = getProvider(name as string);
+  await authorOnlyAction(req, res, async () => {
+    if (provider === "codex") {
+      return resumeCodexAgent(name as string);
+    }
+    await execFileAsync("tmux", ["send-keys", "-t", `crew-${name}`, "Please continue from the current task and report back in chat.", "Enter"]);
+    return true;
+  });
+});
+
+router.post("/:name/reset-session", async (req: Request, res: Response) => {
+  const { name } = req.params;
+  const provider = getProvider(name as string);
+  await authorOnlyAction(req, res, async () => {
+    if (provider === "codex") {
+      clearAgentMetadataKeys(name as string, ["threadId"]);
+      return restartCodexAgent(name as string, true);
+    }
+    const session = `crew-${name}`;
+    await execFileAsync("tmux", ["has-session", "-t", session]);
+    await killAgentProcesses(name as string);
+    await new Promise((r) => setTimeout(r, 2000));
+    const claudePath = findClaudePath();
+    if (!claudePath) {
+      throw new Error("Claude Code CLI not found");
+    }
+    const agentDir = path.join(AGENTS_DIR, name as string);
+    const cmd = buildClaudeCmd(agentDir, claudePath, name as string);
+    await execFileAsync("tmux", ["new-session", "-d", "-s", session, cmd]);
+    return true;
+  });
 });
 
 // DELETE /agents/:name - Full cleanup: DB + tmux + bridge processes + workspace

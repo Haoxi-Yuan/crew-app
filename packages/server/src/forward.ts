@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getDb } from "./db/index.js";
 import { broadcast } from "./ws/handler.js";
+import { getProvider } from "./agent-runtime.js";
+import { sendMessageToCodexAgent } from "./providers/codex.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,6 +18,10 @@ export async function forwardToAgent(
   channelId?: string,
   channelType?: string
 ): Promise<boolean> {
+  if (getProvider(agentName) === "codex") {
+    return sendMessageToCodexAgent(agentName, senderName, content, channelId, channelType);
+  }
+
   const sessionName = `crew-${agentName}`;
 
   try {

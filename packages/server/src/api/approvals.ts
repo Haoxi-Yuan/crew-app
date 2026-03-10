@@ -5,18 +5,26 @@ import {
   getApprovalForAgent,
   sendApprovalResponse,
 } from "../tmux-monitor.js";
+import {
+  getCodexApproval,
+  getCodexApprovals,
+  respondToCodexApproval,
+} from "../providers/codex.js";
+import { getProvider } from "../agent-runtime.js";
 
 const router: RouterType = Router();
 
 // GET /api/approvals - List all pending tool approvals
 router.get("/", (_req: Request, res: Response) => {
-  res.json(getActiveApprovals());
+  res.json([...getActiveApprovals(), ...getCodexApprovals()]);
 });
 
 // GET /api/approvals/:agentName - Get pending approval for a specific agent
 router.get("/:agentName", (req: Request, res: Response) => {
   const { agentName } = req.params;
-  const approval = getApprovalForAgent(agentName as string);
+  const approval = getProvider(agentName as string) === "codex"
+    ? getCodexApproval(agentName as string)
+    : getApprovalForAgent(agentName as string);
   if (!approval) {
     res.status(404).json({ error: "No pending approval for this agent" });
     return;
@@ -34,17 +42,22 @@ router.post("/:agentName/respond", async (req: Request, res: Response) => {
     return;
   }
 
-  const approval = getApprovalForAgent(agentName as string);
+  const provider = getProvider(agentName as string);
+  const approval = provider === "codex"
+    ? getCodexApproval(agentName as string)
+    : getApprovalForAgent(agentName as string);
   if (!approval) {
     res.status(404).json({ error: "No pending approval for this agent" });
     return;
   }
 
-  const ok = await sendApprovalResponse(agentName as string, key);
+  const ok = provider === "codex"
+    ? await respondToCodexApproval(agentName as string, key)
+    : await sendApprovalResponse(agentName as string, key);
   if (ok) {
     res.json({ ok: true, agentName, key });
   } else {
-    res.status(500).json({ error: "Failed to send response to agent tmux session" });
+    res.status(500).json({ error: "Failed to send response to agent runtime" });
   }
 });
 
