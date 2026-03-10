@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "claude-crew": {
+      "command": "/Users/yuan/.nvm/versions/node/v22.14.0/bin/node",
+      "args": [
+        "/Users/yuan/Projects/claude-crew/packages/mcp-bridge/dist/index.js",
+        "data-analyst",
+        "Data analysis, visualization and ML expert"
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "chart": {
+      "command": "npx",
+      "args": ["-y", "@antv/mcp-server-chart"]
+    }
+  }
+}

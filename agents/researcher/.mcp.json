@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "claude-crew": {
+      "command": "/Users/yuan/.nvm/versions/node/v22.14.0/bin/node",
+      "args": [
+        "/Users/yuan/Projects/claude-crew/packages/mcp-bridge/dist/index.js",
+        "researcher",
+        "Academic literature search and research support expert"
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "paper-search": {
+      "command": "/opt/miniconda3/bin/uvx",
+      "args": ["paper-search-mcp"]
+    },
+    "arxiv": {
+      "command": "/opt/miniconda3/bin/uvx",
+      "args": [
+        "arxiv-mcp-server",
+        "--storage-path",
+        "/Users/yuan/Projects/claude-crew/data/shared/papers"
+      ]
+    }
+  }
+}

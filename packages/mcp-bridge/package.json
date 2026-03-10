@@ -1,0 +1,20 @@
+{
+  "name": "@claude-crew/mcp-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "claude-crew-bridge": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "typescript": "^5.7.0"
+  }
+}

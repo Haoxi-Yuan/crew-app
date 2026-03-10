@@ -1,0 +1,14 @@
+{
+  "name": "@claude-crew/web-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --outfile=dist/bundle.js --minify --target=es2022",
+    "dev": "esbuild src/main.ts --bundle --outfile=dist/bundle.js --target=es2022 --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}

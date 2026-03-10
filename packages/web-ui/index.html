@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Crew</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div id="sidebar-resize-handle"></div>
+      <div class="sidebar-section">
+        <h2>Claude Crew</h2>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-header">
+          <h3>Channels</h3>
+          <button class="icon-btn" id="add-channel-btn" title="New channel">+</button>
+        </div>
+        <ul id="channel-list"></ul>
+        <label class="toggle-label">
+          <input type="checkbox" id="show-archived"> Show archived
+        </label>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-header">
+          <h3>Agents</h3>
+          <div style="display:flex;gap:4px;">
+            <button class="icon-btn" id="wake-all-btn" title="Wake all agents">!</button>
+            <button class="icon-btn" id="add-agent-btn" title="New agent">+</button>
+          </div>
+        </div>
+        <ul id="agent-list"></ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-header">
+          <h3>Shared Files</h3>
+          <div style="display:flex;gap:4px;">
+            <button class="icon-btn" id="new-file-btn" title="New file">+</button>
+            <button class="icon-btn" id="upload-file-btn" title="Upload file">^</button>
+          </div>
+        </div>
+        <input type="file" id="file-upload-input" accept=".md,.json,.txt" style="display:none">
+        <ul id="file-list"></ul>
+      </div>
+      <div class="sidebar-section">
+        <button id="import-btn" class="sidebar-btn">Import History</button>
+      </div>
+    </aside>
+    <main id="chat-area">
+      <div id="channel-header">
+        <span id="channel-name">General</span>
+        <span id="channel-desc"></span>
+      </div>
+      <div id="messages"></div>
+      <div id="mention-dropdown" class="hidden"></div>
+      <div id="input-area">
+        <textarea id="message-input" placeholder="Type a message... Use @ to mention agents" rows="1"></textarea>
+        <button id="send-btn">Send</button>
+        <div class="input-hints">
+          <span>Enter to send</span>
+          <span>Shift+Enter for newline</span>
+          <span>**bold** *italic* `code`</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Context Menu -->
+  <div id="context-menu" class="hidden">
+    <div class="ctx-item" data-action="archive">Archive</div>
+    <div class="ctx-item" data-action="unarchive">Unarchive</div>
+    <div class="ctx-item ctx-danger" data-action="delete">Delete</div>
+  </div>
+
+  <!-- Generic Modal -->
+  <div id="modal-overlay" class="hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-title"></h3>
+        <button id="modal-close-btn">&times;</button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Quick Jump (Cmd+K) -->
+  <div id="quick-jump" class="hidden">
+    <div class="qj-backdrop"></div>
+    <div class="qj-modal">
+      <input class="qj-input" type="text" placeholder="Jump to channel or agent...">
+      <ul class="qj-results"></ul>
+    </div>
+  </div>
+
+  <footer id="status-bar">
+    <span id="server-status">Connecting...</span>
+    <span id="status-bar-msgs"></span>
+    <span id="agent-count"></span>
+  </footer>
+  <script src="/dist/bundle.js"></script>
+</body>
+</html>

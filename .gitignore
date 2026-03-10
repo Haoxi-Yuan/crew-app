@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.build/
+data/
+bin/ollama
+*.db
+*.log
+.DS_Store
