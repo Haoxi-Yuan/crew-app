@@ -1,29 +1,61 @@
+import crypto from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import type { Router as RouterType } from "express";
-import crypto from "node:crypto";
 import { getDb, type MemoryEntryRow } from "../db/index.js";
 import {
   computeActivation,
   computeRetrievability,
   computeSearchScore,
-  onMemoryAccessed,
   consolidate,
+  onMemoryAccessed,
   type MemoryEntry,
 } from "../memory-engine.js";
 import {
-  generateEmbedding,
   bufferToVector,
   cosineSimilarity,
+  generateEmbedding,
   isEmbeddingAvailable,
 } from "../embedding.js";
+import { inferMemoryIntent, listProjectScopeIds, resolveScope, type ScopeType } from "../storage-scope.js";
 
 const router: RouterType = Router();
+const VALID_CATEGORIES = ["contact", "preference", "decision", "project", "pattern", "feedback", "daily"];
 
 function rowToEntry(row: MemoryEntryRow): MemoryEntry {
   return { ...row };
 }
 
-// POST /api/memory/entries - Create a new memory entry
+function buildScopeFilter(
+  projectId?: string | null,
+  scopeType?: string | null,
+  scopeId?: string | null,
+): { sql: string; params: string[] } {
+  if (scopeType && (scopeType === "global" || scopeType === "project" || scopeType === "workplace")) {
+    return {
+      sql: "scope_type = ? AND scope_id = ?",
+      params: [scopeType, scopeType === "global" ? "" : (scopeId || "")],
+    };
+  }
+
+  if (projectId) {
+    const scopeIds = listProjectScopeIds(projectId);
+    const params = [projectId, ...scopeIds.workplaceIds];
+    const placeholders = scopeIds.workplaceIds.map(() => "?").join(", ");
+    const workplaceClause = scopeIds.workplaceIds.length > 0
+      ? ` OR (scope_type = 'workplace' AND scope_id IN (${placeholders}))`
+      : "";
+    return {
+      sql: `(scope_type = 'project' AND scope_id = ?${workplaceClause})`,
+      params,
+    };
+  }
+
+  return {
+    sql: "scope_type = 'global' AND scope_id = ''",
+    params: [],
+  };
+}
+
 router.post("/entries", (req: Request, res: Response) => {
   const {
     agent_name = "author",
@@ -34,6 +66,10 @@ router.post("/entries", (req: Request, res: Response) => {
     importance = 3,
     emotional_weight = 1.0,
     linked_ids = [],
+    project_id = null,
+    scope_type = null,
+    scope_id = null,
+    scope_kind = null,
   } = req.body as {
     agent_name?: string;
     category?: string;
@@ -43,16 +79,31 @@ router.post("/entries", (req: Request, res: Response) => {
     importance?: number;
     emotional_weight?: number;
     linked_ids?: string[];
+    project_id?: string | null;
+    scope_type?: ScopeType | null;
+    scope_id?: string | null;
+    scope_kind?: string | null;
   };
 
   if (!category || !heading || !content) {
     res.status(400).json({ error: "category, heading, and content are required" });
     return;
   }
+  if (!VALID_CATEGORIES.includes(category)) {
+    res.status(400).json({ error: `category must be one of: ${VALID_CATEGORIES.join(", ")}` });
+    return;
+  }
 
-  const validCategories = ["contact", "preference", "decision", "project", "pattern", "feedback", "daily"];
-  if (!validCategories.includes(category)) {
-    res.status(400).json({ error: `category must be one of: ${validCategories.join(", ")}` });
+  let resolvedScope;
+  try {
+    resolvedScope = resolveScope({
+      scopeType: scope_type,
+      scopeId: scope_id,
+      projectId: project_id,
+      intent: inferMemoryIntent(category, scope_kind),
+    });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
     return;
   }
 
@@ -61,10 +112,11 @@ router.post("/entries", (req: Request, res: Response) => {
   const id = crypto.randomUUID();
   const contentHash = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
 
-  // Check for duplicate content
-  const existing = db
-    .prepare("SELECT id FROM memory_entries WHERE agent_name = ? AND content_hash = ? AND status != 'archived'")
-    .get(agent_name, contentHash) as { id: string } | undefined;
+  const existing = db.prepare(`
+    SELECT id
+    FROM memory_entries
+    WHERE agent_name = ? AND content_hash = ? AND scope_type = ? AND scope_id = ? AND status != 'archived'
+  `).get(agent_name, contentHash, resolvedScope.scopeType, resolvedScope.scopeId) as { id: string } | undefined;
 
   if (existing) {
     res.status(409).json({ error: "duplicate content", existing_id: existing.id });
@@ -73,8 +125,6 @@ router.post("/entries", (req: Request, res: Response) => {
 
   const clampedImportance = Math.max(1, Math.min(5, Math.round(importance)));
   const clampedEmotional = Math.max(1.0, Math.min(2.0, emotional_weight));
-
-  // Determine initial status
   const permanentCategories = new Set(["contact", "preference"]);
   const initialStatus = permanentCategories.has(category) ? "permanent" : "active";
 
@@ -83,14 +133,27 @@ router.post("/entries", (req: Request, res: Response) => {
       id, agent_name, category, source_file, heading, content, content_hash,
       importance, emotional_weight, created_at, last_accessed_at,
       access_count, access_timestamps, stability, difficulty,
-      activation, retrievability, status, linked_ids
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '[]', 1.0, 0.3, 0.0, 1.0, ?, '${JSON.stringify(linked_ids)}')
+      activation, retrievability, status, linked_ids, project_id, scope_type, scope_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '[]', 1.0, 0.3, 0.0, 1.0, ?, ?, ?, ?, ?)
   `).run(
-    id, agent_name, category, source_file, heading, content, contentHash,
-    clampedImportance, clampedEmotional, now, now, initialStatus
+    id,
+    agent_name,
+    category,
+    source_file,
+    heading,
+    content,
+    contentHash,
+    clampedImportance,
+    clampedEmotional,
+    now,
+    now,
+    initialStatus,
+    JSON.stringify(linked_ids),
+    resolvedScope.projectId,
+    resolvedScope.scopeType,
+    resolvedScope.scopeId,
   );
 
-  // Compute initial activation
   const row = db.prepare("SELECT * FROM memory_entries WHERE id = ?").get(id) as MemoryEntryRow;
   const entry = rowToEntry(row);
   const activation = computeActivation(entry, now);
@@ -98,22 +161,26 @@ router.post("/entries", (req: Request, res: Response) => {
   db.prepare("UPDATE memory_entries SET activation = ?, retrievability = ? WHERE id = ?")
     .run(activation, retrievability, id);
 
-  // Generate embedding asynchronously (non-blocking)
-  const embeddingText = `${heading}\n${content}`;
-  generateEmbedding(embeddingText).then((buf) => {
+  generateEmbedding(`${heading}\n${content}`).then((buf) => {
     if (buf) {
       getDb().prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run(buf, id);
     }
-  }).catch(() => { /* Ollama unavailable, skip silently */ });
+  }).catch(() => {});
 
-  res.json({ id, status: initialStatus, activation, retrievability });
+  res.json({
+    id,
+    status: initialStatus,
+    activation,
+    retrievability,
+    scope_type: resolvedScope.scopeType,
+    scope_id: resolvedScope.scopeId,
+    project_id: resolvedScope.projectId,
+  });
 });
 
-// GET /api/memory/entries/:id - Read a specific memory entry (records access)
 router.get("/entries/:id", (req: Request, res: Response) => {
   const db = getDb();
   const row = db.prepare("SELECT * FROM memory_entries WHERE id = ?").get(req.params.id) as MemoryEntryRow | undefined;
-
   if (!row) {
     res.status(404).json({ error: "memory entry not found" });
     return;
@@ -121,16 +188,19 @@ router.get("/entries/:id", (req: Request, res: Response) => {
 
   const now = Date.now();
   const updated = onMemoryAccessed(rowToEntry(row), now);
-
   db.prepare(`
     UPDATE memory_entries SET
       access_count = ?, access_timestamps = ?, last_accessed_at = ?,
       stability = ?, activation = ?, retrievability = ?
     WHERE id = ?
   `).run(
-    updated.access_count, updated.access_timestamps, updated.last_accessed_at,
-    updated.stability, updated.activation, updated.retrievability,
-    updated.id
+    updated.access_count,
+    updated.access_timestamps,
+    updated.last_accessed_at,
+    updated.stability,
+    updated.activation,
+    updated.retrievability,
+    updated.id,
   );
 
   res.json({
@@ -144,10 +214,12 @@ router.get("/entries/:id", (req: Request, res: Response) => {
     access_count: updated.access_count,
     activation: updated.activation,
     retrievability: updated.retrievability,
+    project_id: updated.project_id || null,
+    scope_type: updated.scope_type || "global",
+    scope_id: updated.scope_id || "",
   });
 });
 
-// GET /api/memory/search - Search memories with hybrid keyword + vector ranking
 router.get("/search", async (req: Request, res: Response) => {
   const {
     q,
@@ -156,6 +228,9 @@ router.get("/search", async (req: Request, res: Response) => {
     include_weak,
     limit = "5",
     summary_only = "true",
+    project_id,
+    scope_type,
+    scope_id,
   } = req.query as {
     q?: string;
     agent_name?: string;
@@ -163,6 +238,9 @@ router.get("/search", async (req: Request, res: Response) => {
     include_weak?: string;
     limit?: string;
     summary_only?: string;
+    project_id?: string;
+    scope_type?: string;
+    scope_id?: string;
   };
 
   if (!q) {
@@ -172,29 +250,26 @@ router.get("/search", async (req: Request, res: Response) => {
 
   const db = getDb();
   const now = Date.now();
-  const maxResults = Math.min(parseInt(limit) || 5, 20);
-  const isSummary = summary_only !== "false";
+  const maxResults = Math.min(parseInt(limit, 10) || 5, 20);
+  const summary = summary_only !== "false";
+  const scopeFilter = buildScopeFilter(project_id, scope_type, scope_id);
 
-  // Build SQL query
   let sql = `
     SELECT * FROM memory_entries
-    WHERE agent_name = ? AND status != 'archived'
+    WHERE agent_name = ? AND status != 'archived' AND ${scopeFilter.sql}
   `;
-  const params: (string | number)[] = [agent_name];
+  const params: (string | number)[] = [agent_name, ...scopeFilter.params];
 
   if (category) {
     sql += " AND category = ?";
     params.push(category);
   }
-
   if (!include_weak || include_weak === "false") {
     sql += " AND retrievability > 0.05";
   }
-
   sql += " ORDER BY retrievability DESC";
-  const rows = db.prepare(sql).all(...params) as MemoryEntryRow[];
 
-  // Generate query embedding if Ollama is available
+  const rows = db.prepare(sql).all(...params) as MemoryEntryRow[];
   const embeddingAvailable = await isEmbeddingAvailable();
   let queryVector: number[] | null = null;
   if (embeddingAvailable) {
@@ -202,16 +277,12 @@ router.get("/search", async (req: Request, res: Response) => {
     if (queryBuf) queryVector = bufferToVector(queryBuf);
   }
 
-  // Hybrid scoring: keyword + vector similarity
   const queryTerms = q.toLowerCase().split(/\s+/).filter(Boolean);
   const scored = rows.map((row) => {
     const entry = rowToEntry(row);
-
-    // Recalculate activation
     entry.activation = computeActivation(entry, now);
     entry.retrievability = computeRetrievability(entry.activation);
 
-    // Keyword relevance: count matching terms in heading + content
     const text = `${entry.heading} ${entry.content}`.toLowerCase();
     let matchCount = 0;
     for (const term of queryTerms) {
@@ -219,35 +290,30 @@ router.get("/search", async (req: Request, res: Response) => {
     }
     const keywordRelevance = queryTerms.length > 0 ? matchCount / queryTerms.length : 0;
 
-    // Vector similarity (if available)
     let vectorSimilarity = 0;
     if (queryVector && row.embedding) {
-      const entryVector = bufferToVector(row.embedding);
-      vectorSimilarity = Math.max(0, cosineSimilarity(queryVector, entryVector));
+      vectorSimilarity = Math.max(0, cosineSimilarity(queryVector, bufferToVector(row.embedding)));
     }
-
-    // Skip entries with no relevance signal at all
     if (matchCount === 0 && vectorSimilarity < 0.3) return null;
 
-    // Hybrid relevance: keyword and vector complement each other
-    // When both available: 50/50 blend. When only keyword: 100% keyword.
-    let searchRelevance: number;
-    if (queryVector && row.embedding) {
-      searchRelevance = 0.5 * keywordRelevance + 0.5 * vectorSimilarity;
-    } else {
-      searchRelevance = keywordRelevance;
-    }
+    const searchRelevance = queryVector && row.embedding
+      ? 0.5 * keywordRelevance + 0.5 * vectorSimilarity
+      : keywordRelevance;
+    const hoursSinceAccess = Math.max(0, (now - entry.last_accessed_at) / 3600000);
+    const recentAccessBoost = entry.access_count > 0
+      ? Math.max(0, 0.2 - Math.min(hoursSinceAccess, 24) * (0.2 / 24))
+      : 0;
+    const finalScore = computeSearchScore(searchRelevance, entry.retrievability) + recentAccessBoost;
+    return { entry, finalScore };
+  }).filter(Boolean) as { entry: MemoryEntry; finalScore: number }[];
 
-    const finalScore = computeSearchScore(searchRelevance, entry.retrievability);
-
-    return { entry, keywordRelevance, vectorSimilarity, finalScore };
-  }).filter(Boolean) as { entry: MemoryEntry; keywordRelevance: number; vectorSimilarity: number; finalScore: number }[];
-
-  // Sort by final score
-  scored.sort((a, b) => b.finalScore - a.finalScore);
+  scored.sort((a, b) =>
+    (b.finalScore - a.finalScore)
+    || (b.entry.retrievability - a.entry.retrievability)
+    || (b.entry.last_accessed_at - a.entry.last_accessed_at)
+  );
   const results = scored.slice(0, maxResults);
 
-  // Record access for returned results
   for (const { entry } of results) {
     const updated = onMemoryAccessed(entry, now);
     db.prepare(`
@@ -256,69 +322,70 @@ router.get("/search", async (req: Request, res: Response) => {
         stability = ?, activation = ?, retrievability = ?
       WHERE id = ?
     `).run(
-      updated.access_count, updated.access_timestamps, updated.last_accessed_at,
-      updated.stability, updated.activation, updated.retrievability,
-      updated.id
+      updated.access_count,
+      updated.access_timestamps,
+      updated.last_accessed_at,
+      updated.stability,
+      updated.activation,
+      updated.retrievability,
+      updated.id,
     );
   }
 
-  if (isSummary) {
-    res.json({
-      count: results.length,
-      entries: results.map(({ entry, finalScore }) => ({
-        id: entry.id,
-        heading: entry.heading,
-        category: entry.category,
-        importance: entry.importance,
-        retrievability: Math.round(entry.retrievability * 100) / 100,
-        score: Math.round(finalScore * 100) / 100,
-      })),
-    });
-  } else {
-    res.json({
-      count: results.length,
-      entries: results.map(({ entry, finalScore }) => ({
-        id: entry.id,
-        heading: entry.heading,
-        category: entry.category,
-        content: entry.content,
-        importance: entry.importance,
-        status: entry.status,
-        access_count: entry.access_count,
-        retrievability: Math.round(entry.retrievability * 100) / 100,
-        score: Math.round(finalScore * 100) / 100,
-      })),
-    });
-  }
+  res.json({
+    count: results.length,
+    entries: results.map(({ entry, finalScore }) => ({
+      id: entry.id,
+      heading: entry.heading,
+      category: entry.category,
+      ...(summary ? {} : { content: entry.content, status: entry.status, access_count: entry.access_count }),
+      importance: entry.importance,
+      retrievability: Math.round(entry.retrievability * 100) / 100,
+      score: Math.round(finalScore * 100) / 100,
+      project_id: entry.project_id || null,
+      scope_type: entry.scope_type || "global",
+      scope_id: entry.scope_id || "",
+    })),
+  });
 });
 
-// POST /api/memory/consolidate - Trigger memory consolidation
 router.post("/consolidate", (req: Request, res: Response) => {
-  const { agent_name = "author" } = req.body as { agent_name?: string };
+  const {
+    agent_name = "author",
+    project_id = null,
+    scope_type = null,
+    scope_id = null,
+  } = req.body as {
+    agent_name?: string;
+    project_id?: string | null;
+    scope_type?: string | null;
+    scope_id?: string | null;
+  };
+
   const db = getDb();
   const now = Date.now();
+  const scopeFilter = buildScopeFilter(project_id, scope_type, scope_id);
+  const rows = db.prepare(`
+    SELECT * FROM memory_entries
+    WHERE agent_name = ? AND status != 'archived' AND ${scopeFilter.sql}
+  `).all(agent_name, ...scopeFilter.params) as MemoryEntryRow[];
 
-  const rows = db
-    .prepare("SELECT * FROM memory_entries WHERE agent_name = ? AND status != 'archived'")
-    .all(agent_name) as MemoryEntryRow[];
-
-  const entries = rows.map(rowToEntry);
-  const { result, updates } = consolidate(entries, now);
-
-  // Batch update all entries
+  const { result, updates } = consolidate(rows.map(rowToEntry), now);
   const updateStmt = db.prepare(`
     UPDATE memory_entries SET
-      activation = ?, retrievability = ?, status = ?,
-      stability = ?, promoted_at = ?, archived_at = ?
+      activation = ?, retrievability = ?, status = ?, stability = ?, promoted_at = ?, archived_at = ?
     WHERE id = ?
   `);
-
   const tx = db.transaction(() => {
     for (const entry of updates) {
       updateStmt.run(
-        entry.activation, entry.retrievability, entry.status,
-        entry.stability, entry.promoted_at, entry.archived_at,
-        entry.id
+        entry.activation,
+        entry.retrievability,
+        entry.status,
+        entry.stability,
+        entry.promoted_at,
+        entry.archived_at,
+        entry.id,
       );
     }
   });
@@ -331,45 +398,73 @@ router.post("/consolidate", (req: Request, res: Response) => {
     archived: result.archived.length,
     promoted_ids: result.promoted,
     archived_ids: result.archived,
+    scope_type: scope_type || (project_id ? "project+workplaces" : "global"),
+    scope_id: scope_id || project_id || "",
   });
 });
 
-// GET /api/memory/stats - Memory health dashboard
 router.get("/stats", (req: Request, res: Response) => {
-  const { agent_name = "author" } = req.query as { agent_name?: string };
+  const {
+    agent_name = "author",
+    project_id,
+    scope_type,
+    scope_id,
+  } = req.query as { agent_name?: string; project_id?: string; scope_type?: string; scope_id?: string };
   const db = getDb();
+  const scopeFilter = buildScopeFilter(project_id, scope_type, scope_id);
 
-  const total = db
-    .prepare("SELECT COUNT(*) as count FROM memory_entries WHERE agent_name = ?")
-    .get(agent_name) as { count: number };
+  const total = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM memory_entries
+    WHERE agent_name = ? AND ${scopeFilter.sql}
+  `).get(agent_name, ...scopeFilter.params) as { count: number };
 
-  const byStatus = db
-    .prepare("SELECT status, COUNT(*) as count FROM memory_entries WHERE agent_name = ? GROUP BY status")
-    .all(agent_name) as { status: string; count: number }[];
+  const byStatus = db.prepare(`
+    SELECT status, COUNT(*) as count
+    FROM memory_entries
+    WHERE agent_name = ? AND ${scopeFilter.sql}
+    GROUP BY status
+  `).all(agent_name, ...scopeFilter.params) as { status: string; count: number }[];
 
-  const byCategory = db
-    .prepare("SELECT category, COUNT(*) as count FROM memory_entries WHERE agent_name = ? AND status != 'archived' GROUP BY category")
-    .all(agent_name) as { category: string; count: number }[];
+  const byCategory = db.prepare(`
+    SELECT category, COUNT(*) as count
+    FROM memory_entries
+    WHERE agent_name = ? AND status != 'archived' AND ${scopeFilter.sql}
+    GROUP BY category
+  `).all(agent_name, ...scopeFilter.params) as { category: string; count: number }[];
 
-  const avgRetrievability = db
-    .prepare("SELECT AVG(retrievability) as avg FROM memory_entries WHERE agent_name = ? AND status != 'archived'")
-    .get(agent_name) as { avg: number | null };
+  const avgRetrievability = db.prepare(`
+    SELECT AVG(retrievability) as avg
+    FROM memory_entries
+    WHERE agent_name = ? AND status != 'archived' AND ${scopeFilter.sql}
+  `).get(agent_name, ...scopeFilter.params) as { avg: number | null };
 
-  const recentAccess = db
-    .prepare("SELECT id, heading, category, access_count, last_accessed_at FROM memory_entries WHERE agent_name = ? AND status != 'archived' ORDER BY last_accessed_at DESC LIMIT 5")
-    .all(agent_name) as { id: string; heading: string; category: string; access_count: number; last_accessed_at: number }[];
+  const recentAccess = db.prepare(`
+    SELECT id, heading, category, access_count, last_accessed_at
+    FROM memory_entries
+    WHERE agent_name = ? AND status != 'archived' AND ${scopeFilter.sql}
+    ORDER BY last_accessed_at DESC
+    LIMIT 5
+  `).all(agent_name, ...scopeFilter.params) as {
+    id: string;
+    heading: string;
+    category: string;
+    access_count: number;
+    last_accessed_at: number;
+  }[];
 
   res.json({
     agent_name,
     total: total.count,
-    by_status: Object.fromEntries(byStatus.map((r) => [r.status, r.count])),
-    by_category: Object.fromEntries(byCategory.map((r) => [r.category, r.count])),
+    by_status: Object.fromEntries(byStatus.map((row) => [row.status, row.count])),
+    by_category: Object.fromEntries(byCategory.map((row) => [row.category, row.count])),
     avg_retrievability: avgRetrievability.avg ? Math.round(avgRetrievability.avg * 100) / 100 : null,
     recently_accessed: recentAccess,
+    scope_type: scope_type || (project_id ? "project+workplaces" : "global"),
+    scope_id: scope_id || project_id || "",
   });
 });
 
-// DELETE /api/memory/entries/:id - Delete a memory entry
 router.delete("/entries/:id", (req: Request, res: Response) => {
   const db = getDb();
   const result = db.prepare("DELETE FROM memory_entries WHERE id = ?").run(req.params.id);
@@ -380,11 +475,10 @@ router.delete("/entries/:id", (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// PUT /api/memory/entries/:id - Update a memory entry
 router.put("/entries/:id", (req: Request, res: Response) => {
   const db = getDb();
-  const existing = db.prepare("SELECT * FROM memory_entries WHERE id = ?").get(req.params.id) as MemoryEntryRow | undefined;
-
+  const entryId = typeof req.params.id === "string" ? req.params.id : String(req.params.id);
+  const existing = db.prepare("SELECT * FROM memory_entries WHERE id = ?").get(entryId) as MemoryEntryRow | undefined;
   if (!existing) {
     res.status(404).json({ error: "memory entry not found" });
     return;
@@ -400,29 +494,29 @@ router.put("/entries/:id", (req: Request, res: Response) => {
   };
 
   const updates: string[] = [];
-  const params: (string | number)[] = [];
-
+  const params: Array<string | number | null> = [];
   if (heading !== undefined) { updates.push("heading = ?"); params.push(heading); }
   if (content !== undefined) {
-    const hash = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
     updates.push("content = ?", "content_hash = ?");
-    params.push(content, hash);
+    params.push(content, crypto.createHash("sha256").update(content).digest("hex").slice(0, 16));
   }
-  if (importance !== undefined) { updates.push("importance = ?"); params.push(Math.max(1, Math.min(5, Math.round(importance)))); }
-  if (emotional_weight !== undefined) { updates.push("emotional_weight = ?"); params.push(Math.max(1.0, Math.min(2.0, emotional_weight))); }
+  if (importance !== undefined) {
+    updates.push("importance = ?");
+    params.push(Math.max(1, Math.min(5, Math.round(importance))));
+  }
+  if (emotional_weight !== undefined) {
+    updates.push("emotional_weight = ?");
+    params.push(Math.max(1.0, Math.min(2.0, emotional_weight)));
+  }
   if (category !== undefined) { updates.push("category = ?"); params.push(category); }
   if (status !== undefined) { updates.push("status = ?"); params.push(status); }
-
   if (updates.length === 0) {
     res.status(400).json({ error: "no fields to update" });
     return;
   }
 
-  const entryId = String(req.params.id);
   params.push(entryId);
   db.prepare(`UPDATE memory_entries SET ${updates.join(", ")} WHERE id = ?`).run(...params);
-
-  // Re-generate embedding if heading or content changed
   if (heading !== undefined || content !== undefined) {
     const updatedRow = db.prepare("SELECT heading, content FROM memory_entries WHERE id = ?").get(entryId) as { heading: string; content: string };
     generateEmbedding(`${updatedRow.heading}\n${updatedRow.content}`).then((buf) => {
@@ -431,24 +525,35 @@ router.put("/entries/:id", (req: Request, res: Response) => {
       }
     }).catch(() => {});
   }
-
   res.json({ ok: true });
 });
 
-// POST /api/memory/reindex - Generate embeddings for entries that don't have one
 router.post("/reindex", async (req: Request, res: Response) => {
-  const { agent_name = "author" } = req.body as { agent_name?: string };
+  const {
+    agent_name = "author",
+    project_id = null,
+    scope_type = null,
+    scope_id = null,
+  } = req.body as {
+    agent_name?: string;
+    project_id?: string | null;
+    scope_type?: string | null;
+    scope_id?: string | null;
+  };
 
   const available = await isEmbeddingAvailable();
   if (!available) {
-    res.status(503).json({ error: "Ollama is not running. Start with: ollama serve" });
+    res.status(503).json({ error: "Ollama could not be started automatically. Check bin/ollama exists and model is available." });
     return;
   }
 
   const db = getDb();
-  const rows = db
-    .prepare("SELECT id, heading, content FROM memory_entries WHERE agent_name = ? AND embedding IS NULL AND status != 'archived'")
-    .all(agent_name) as { id: string; heading: string; content: string }[];
+  const scopeFilter = buildScopeFilter(project_id, scope_type, scope_id);
+  const rows = db.prepare(`
+    SELECT id, heading, content
+    FROM memory_entries
+    WHERE agent_name = ? AND embedding IS NULL AND status != 'archived' AND ${scopeFilter.sql}
+  `).all(agent_name, ...scopeFilter.params) as { id: string; heading: string; content: string }[];
 
   let indexed = 0;
   let failed = 0;

@@ -1,0 +1,21 @@
+{
+  "agent_name": "TEST",
+  "agent_dir": "/Users/yuan/Projects/claude-crew/agents/TEST",
+  "project": {
+    "id": "981e2929-8dea-49de-8f0c-6ff62041b0da",
+    "name": "Crew app",
+    "slug": "crew-app",
+    "directory": "/Users/yuan/Projects/claude-crew/data/projects/crew-app"
+  },
+  "workplace": {
+    "id": "074faea0-f963-4d0d-839b-150eb6656b2a",
+    "name": "Default Workplace",
+    "slug": "default",
+    "directory": "/Users/yuan/Projects/claude-crew/data/projects/crew-app/workplaces/default",
+    "kind": "derived"
+  },
+  "pointers": {
+    "current_project": "/Users/yuan/Projects/claude-crew/agents/TEST/.crew/current-project",
+    "current_workplace": "/Users/yuan/Projects/claude-crew/agents/TEST/.crew/current-workplace"
+  }
+}

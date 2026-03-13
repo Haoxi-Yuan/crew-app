@@ -19,22 +19,29 @@ final class ServerProcess {
     }
 
     func findNodePath() -> String? {
-        let candidates = [
-            ProcessInfo.processInfo.environment["NODE_PATH"],
-            resolvePath("~/.nvm/versions/node")
-                .flatMap { findLatestNodeIn(dir: $0) },
-            "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
-            "/usr/bin/node",
-        ]
+        let explicitPath = ProcessInfo.processInfo.environment["NODE_PATH"]
+        let nvmBinPath = ProcessInfo.processInfo.environment["NVM_BIN"].map { "\($0)/node" }
+        let nvmVersions = resolvePath("~/.nvm/versions/node")
+            .flatMap { findAllNodesIn(dir: $0) } ?? []
+        let shellNode = shellWhich("node")
+        let candidates = [explicitPath, nvmBinPath]
+            + nvmVersions.map(Optional.some)
+            + [shellNode, "/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+
+        for candidate in candidates {
+            guard let p = candidate else { continue }
+            if nodeSupportsServer(atPath: p) {
+                return p
+            }
+        }
+
         for candidate in candidates {
             guard let p = candidate else { continue }
             if FileManager.default.isExecutableFile(atPath: p) {
                 return p
             }
         }
-        // Fallback: try 'which node' via shell
-        return shellWhich("node")
+        return nil
     }
 
     func start() throws {
@@ -56,6 +63,7 @@ final class ServerProcess {
         var env = ProcessInfo.processInfo.environment
         env["CREW_PORT"] = String(port)
         env["NODE_ENV"] = "production"
+        env["NODE_PATH"] = nodePath
         proc.environment = env
 
         proc.currentDirectoryURL = URL(fileURLWithPath: projectRoot)
@@ -115,16 +123,34 @@ final class ServerProcess {
         return nil
     }
 
-    private func findLatestNodeIn(dir: String) -> String? {
-        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
+    private func findAllNodesIn(dir: String) -> [String] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
         let sorted = contents.sorted { $0 > $1 }
+        var results: [String] = []
         for version in sorted {
             let nodeBin = "\(dir)/\(version)/bin/node"
             if FileManager.default.isExecutableFile(atPath: nodeBin) {
-                return nodeBin
+                results.append(nodeBin)
             }
         }
-        return nil
+        return results
+    }
+
+    private func nodeSupportsServer(atPath path: String) -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: path) else { return false }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: path)
+        proc.arguments = ["-e", "require('better-sqlite3')"]
+        proc.currentDirectoryURL = URL(fileURLWithPath: projectRoot).appendingPathComponent("packages/server")
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 
     private func shellWhich(_ cmd: String) -> String? {

@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",
-    "dev": "pnpm --filter @claude-crew/server dev"
+    "dev": "pnpm --filter @claude-crew/server dev",
+    "validate:productization": "node ./scripts/validate-memory-productization.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

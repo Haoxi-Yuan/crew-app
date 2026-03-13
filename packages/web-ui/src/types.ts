@@ -29,12 +29,20 @@ export interface Channel {
   status: "active" | "archived";
   type?: "public" | "dm" | "group";
   members?: string[] | null;
+  project_id?: string | null;
+  workplace_id?: string | null;
   created_at: number;
   updated_at: number;
 }
 
 export interface SharedFile {
+  id?: string;
   path: string;
+  scope_type?: "global" | "project" | "workplace";
+  scope_id?: string;
+  project_id?: string | null;
+  workplace_id?: string | null;
+  scope_name?: string | null;
   created_by: string;
   description: string;
   updated_at: number;

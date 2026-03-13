@@ -9,19 +9,46 @@ AGENTS_DIR="$CREW_DIR/agents"
 PORT="${CREW_PORT:-3140}"
 OLLAMA_BIN="$CREW_DIR/bin/ollama"
 export OLLAMA_MODELS="$CREW_DIR/data/ollama-models"
-NODE_PATH="${NODE_PATH:-$(which node 2>/dev/null || echo "")}"
+NODE_PATH="${NODE_PATH:-}"
 
-if [ -z "$NODE_PATH" ]; then
+node_supports_server() {
+    local candidate="$1"
+    [ -x "$candidate" ] || return 1
+    (
+        cd "$CREW_DIR/packages/server" &&
+        "$candidate" -e "require('better-sqlite3')" >/dev/null 2>&1
+    )
+}
+
+find_node_path() {
+    local candidate
+
+    if [ -n "${NODE_PATH:-}" ] && node_supports_server "${NODE_PATH}"; then
+        echo "${NODE_PATH}"
+        return
+    fi
+    if [ -n "${NVM_BIN:-}" ] && node_supports_server "${NVM_BIN}/node"; then
+        echo "${NVM_BIN}/node"
+        return
+    fi
     for candidate in \
         "$HOME/.nvm/versions/node/"*/bin/node \
         /opt/homebrew/bin/node \
-        /usr/local/bin/node; do
-        if [ -x "$candidate" ]; then
-            NODE_PATH="$candidate"
-            break
+        /usr/local/bin/node \
+        /usr/bin/node; do
+        if node_supports_server "$candidate"; then
+            echo "$candidate"
+            return
         fi
     done
-fi
+
+    candidate="$(command -v node 2>/dev/null || echo "")"
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        echo "$candidate"
+    fi
+}
+
+NODE_PATH="$(find_node_path)"
 
 ensure_node() {
     if [ -z "$NODE_PATH" ]; then
@@ -190,6 +217,7 @@ case "${1:-}" in
 
     app)
         export CREW_PROJECT_ROOT="$CREW_DIR"
+        export NODE_PATH
         SWIFT_BUILD="$CREW_DIR/app/.build/release/ClaudeCrew"
         if [ ! -f "$SWIFT_BUILD" ]; then
             SWIFT_BUILD="$CREW_DIR/app/.build/debug/ClaudeCrew"
@@ -306,6 +334,118 @@ case "${1:-}" in
         fi
         ;;
 
+    project)
+        ensure_server
+        SUBCMD="${2:-list}"
+        case "$SUBCMD" in
+            list)
+                curl -s "http://127.0.0.1:$PORT/api/projects" 2>/dev/null | python3 -c "
+import json, sys
+projects = json.load(sys.stdin)
+if not projects:
+    print('No projects. Create one: crew project create <name>')
+    sys.exit(0)
+for p in projects:
+    agents = p.get('agent_count', 0)
+    memory = p.get('memory_count', 0)
+    tech = ', '.join(p.get('tech_stack', []))
+    print(f\"  {p['name']} [{p['status']}] id={p['id'][:8]}.. ({agents} agents, {memory} memories)\")
+    if tech:
+        print(f\"    Tech: {tech}\")
+" 2>/dev/null || echo "Failed to list projects"
+                ;;
+            create)
+                PROJECT_NAME="${3:-}"
+                PROJECT_DESC="${4:-}"
+                PROJECT_TECH="${5:-}"
+                if [ -z "$PROJECT_NAME" ]; then
+                    echo "Usage: crew project create <name> [description] [tech_stack_csv]"
+                    exit 1
+                fi
+                BODY="{\"name\":\"$PROJECT_NAME\""
+                [ -n "$PROJECT_DESC" ] && BODY="$BODY,\"description\":\"$PROJECT_DESC\""
+                if [ -n "$PROJECT_TECH" ]; then
+                    TECH_JSON=$(echo "$PROJECT_TECH" | python3 -c "import sys,json;print(json.dumps([s.strip() for s in sys.stdin.read().strip().split(',')]))" 2>/dev/null || echo "[]")
+                    BODY="$BODY,\"tech_stack\":$TECH_JSON"
+                fi
+                BODY="$BODY}"
+                curl -s -X POST "http://127.0.0.1:$PORT/api/projects" \
+                    -H "Content-Type: application/json" \
+                    -d "$BODY" 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "Failed to create project"
+                ;;
+            pause)
+                PROJECT_ID="${3:-}"
+                [ -z "$PROJECT_ID" ] && { echo "Usage: crew project pause <project-id>"; exit 1; }
+                curl -s -X POST "http://127.0.0.1:$PORT/api/projects/$PROJECT_ID/pause" 2>/dev/null | python3 -m json.tool
+                ;;
+            resume)
+                PROJECT_ID="${3:-}"
+                [ -z "$PROJECT_ID" ] && { echo "Usage: crew project resume <project-id>"; exit 1; }
+                curl -s -X POST "http://127.0.0.1:$PORT/api/projects/$PROJECT_ID/resume" 2>/dev/null | python3 -m json.tool
+                ;;
+            archive)
+                PROJECT_ID="${3:-}"
+                [ -z "$PROJECT_ID" ] && { echo "Usage: crew project archive <project-id>"; exit 1; }
+                curl -s -X POST "http://127.0.0.1:$PORT/api/projects/$PROJECT_ID/archive" 2>/dev/null | python3 -m json.tool
+                ;;
+            *)
+                echo "Usage: crew project <list|create|pause|resume|archive>"
+                ;;
+        esac
+        ;;
+
+    standards)
+        ensure_server
+        SUBCMD="${2:-list}"
+        case "$SUBCMD" in
+            list)
+                curl -s "http://127.0.0.1:$PORT/api/standards?status=active" 2>/dev/null | python3 -c "
+import json, sys
+stds = json.load(sys.stdin)
+if not stds:
+    print('No active standards. Add one: crew standards add <category> <name> <content>')
+    sys.exit(0)
+total = sum(len(s['content']) for s in stds)
+print(f'Active standards ({total}/4000 chars budget):')
+for s in stds:
+    print(f\"  [{s['category']}] {s['name']} (priority:{s['priority']}, {len(s['content'])} chars)\")
+    content_preview = s['content'][:100]
+    if len(s['content']) > 100: content_preview += '...'
+    print(f\"    {content_preview}\")
+" 2>/dev/null || echo "Failed to list standards"
+                ;;
+            add)
+                STD_CAT="${3:-}"
+                STD_NAME="${4:-}"
+                shift 4 2>/dev/null || true
+                STD_CONTENT="$*"
+                if [ -z "$STD_CAT" ] || [ -z "$STD_NAME" ] || [ -z "$STD_CONTENT" ]; then
+                    echo "Usage: crew standards add <category> <name> <content...>"
+                    echo "Categories: coding_norm, tool_preference, workflow, naming"
+                    exit 1
+                fi
+                # Use python to safely JSON-encode the content
+                JSON_BODY=$(python3 -c "
+import json, sys
+print(json.dumps({'category': sys.argv[1], 'name': sys.argv[2], 'content': sys.argv[3]}))
+" "$STD_CAT" "$STD_NAME" "$STD_CONTENT" 2>/dev/null)
+                curl -s -X POST "http://127.0.0.1:$PORT/api/standards" \
+                    -H "Content-Type: application/json" \
+                    -d "$JSON_BODY" 2>/dev/null | python3 -m json.tool
+                ;;
+            budget)
+                curl -s "http://127.0.0.1:$PORT/api/standards/budget" 2>/dev/null | python3 -c "
+import json, sys
+b = json.load(sys.stdin)
+print(f\"Standards budget: {b['used']}/{b['budget']} chars ({b['count']} standards, {b['remaining']} remaining)\")
+" 2>/dev/null || echo "Failed to check budget"
+                ;;
+            *)
+                echo "Usage: crew standards <list|add|budget>"
+                ;;
+        esac
+        ;;
+
     status)
         curl -s "http://127.0.0.1:$PORT/api/status" 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "Server not reachable at port $PORT"
         ;;
@@ -355,6 +495,16 @@ case "${1:-}" in
         echo "  list                List all registered agents"
         echo "  status              Show server status"
         echo "  build               Build all components"
+        echo ""
+        echo "Project management:"
+        echo "  project list                     List all projects"
+        echo "  project create <name> [desc] [tech]  Create a project"
+        echo "  project pause|resume|archive <id>    Change project status"
+        echo ""
+        echo "Shared standards:"
+        echo "  standards list                   List active standards"
+        echo "  standards add <cat> <name> <text>  Add a standard"
+        echo "  standards budget                 Check standards budget usage"
         echo ""
         echo "Quick start:"
         echo "  crew build"

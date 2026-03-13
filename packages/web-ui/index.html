@@ -10,42 +10,56 @@
   <div id="app">
     <aside id="sidebar">
       <div id="sidebar-resize-handle"></div>
-      <div class="sidebar-section">
-        <h2>Claude Crew</h2>
-      </div>
-      <div class="sidebar-section">
-        <div class="section-header">
-          <h3>Channels</h3>
-          <button class="icon-btn" id="add-channel-btn" title="New channel">+</button>
-        </div>
-        <ul id="channel-list"></ul>
-        <label class="toggle-label">
-          <input type="checkbox" id="show-archived"> Show archived
-        </label>
-      </div>
-      <div class="sidebar-section">
-        <div class="section-header">
-          <h3>Agents</h3>
-          <div style="display:flex;gap:4px;">
-            <button class="icon-btn" id="wake-all-btn" title="Wake all agents">!</button>
-            <button class="icon-btn" id="add-agent-btn" title="New agent">+</button>
+      <div class="sidebar-scroll">
+        <div class="sidebar-section">
+          <h2>Claude Crew</h2>
+          <div class="view-switcher">
+            <button class="view-tab active" data-view="chat">Chat</button>
+            <button class="view-tab" data-view="dashboard">Dashboard</button>
           </div>
         </div>
-        <ul id="agent-list"></ul>
-      </div>
-      <div class="sidebar-section">
-        <div class="section-header">
-          <h3>Shared Files</h3>
-          <div style="display:flex;gap:4px;">
-            <button class="icon-btn" id="new-file-btn" title="New file">+</button>
-            <button class="icon-btn" id="upload-file-btn" title="Upload file">^</button>
+        <div class="sidebar-section" id="project-selector-section">
+          <div class="section-header">
+            <h3>Project</h3>
           </div>
+          <select id="project-selector">
+            <option value="">All Projects</option>
+          </select>
         </div>
-        <input type="file" id="file-upload-input" accept=".md,.json,.txt" style="display:none">
-        <ul id="file-list"></ul>
-      </div>
-      <div class="sidebar-section">
-        <button id="import-btn" class="sidebar-btn">Import History</button>
+        <div class="sidebar-section">
+          <div class="section-header">
+            <h3>Channels</h3>
+            <button class="icon-btn" id="add-channel-btn" title="New channel">+</button>
+          </div>
+          <ul id="channel-list"></ul>
+          <label class="toggle-label">
+            <input type="checkbox" id="show-archived"> Show archived
+          </label>
+        </div>
+        <div class="sidebar-section">
+          <div class="section-header">
+            <h3>Agents</h3>
+            <div style="display:flex;gap:4px;">
+              <button class="icon-btn" id="wake-all-btn" title="Wake all agents">!</button>
+              <button class="icon-btn" id="add-agent-btn" title="New agent">+</button>
+            </div>
+          </div>
+          <ul id="agent-list"></ul>
+        </div>
+        <div class="sidebar-section">
+          <div class="section-header">
+            <h3>Shared Files</h3>
+            <div style="display:flex;gap:4px;">
+              <button class="icon-btn" id="new-file-btn" title="New file">+</button>
+              <button class="icon-btn" id="upload-file-btn" title="Upload file">^</button>
+            </div>
+          </div>
+          <input type="file" id="file-upload-input" accept=".md,.json,.txt" style="display:none">
+          <ul id="file-list"></ul>
+        </div>
+        <div class="sidebar-section">
+          <button id="import-btn" class="sidebar-btn">Import History</button>
+        </div>
       </div>
     </aside>
     <main id="chat-area">
@@ -65,6 +79,7 @@
         </div>
       </div>
     </main>
+    <main id="dashboard-area" style="display:none;"></main>
   </div>
 
   <!-- Context Menu -->

@@ -10,6 +10,10 @@ import importRouter from "./import.js";
 import channelsRouter from "./channels.js";
 import approvalsRouter from "./approvals.js";
 import memoryRouter from "./memory.js";
+import projectsRouter from "./projects.js";
+import standardsRouter from "./standards.js";
+import reflectionsRouter from "./reflections.js";
+import peaksRouter from "./peaks.js";
 import { getDb, type PendingMentionRow, type MessageRow } from "../db/index.js";
 import { PROJECT_ROOT } from "../config.js";
 import { DEFAULT_PROVIDER, getProvider } from "../agent-runtime.js";
@@ -24,6 +28,10 @@ router.use("/shared-files", sharedFilesRouter);
 router.use("/import", importRouter);
 router.use("/approvals", approvalsRouter);
 router.use("/memory", memoryRouter);
+router.use("/projects", projectsRouter);
+router.use("/standards", standardsRouter);
+router.use("/reflections", reflectionsRouter);
+router.use("/peaks", peaksRouter);
 
 router.get("/mentions/:agentName", (req: Request, res: Response) => {
   const { agentName } = req.params;

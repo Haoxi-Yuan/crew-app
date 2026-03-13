@@ -7,6 +7,7 @@ import { getDb } from "./db/index.js";
 import apiRouter from "./api/router.js";
 import { initWebSocket, broadcast } from "./ws/handler.js";
 import { startTmuxMonitor } from "./tmux-monitor.js";
+import { processExpiredPeaks } from "./api/peaks.js";
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(SHARED_DIR, { recursive: true });
@@ -55,6 +56,18 @@ setInterval(() => {
     }
   }
 }, HEARTBEAT_CHECK_INTERVAL_MS);
+
+// Peak timeout monitor: auto-decide expired peaks every 30s
+setInterval(() => {
+  try {
+    const result = processExpiredPeaks();
+    if (result.expired > 0) {
+      console.error(`[peak-monitor] auto-decided ${result.expired} expired peak(s)`);
+    }
+  } catch (err) {
+    console.error(`[peak-monitor] error: ${(err as Error).message}`);
+  }
+}, 30_000);
 
 httpServer.listen(PORT, "127.0.0.1", () => {
   console.error(`[claude-crew] server running on http://127.0.0.1:${PORT}`);

@@ -238,6 +238,210 @@ export function removeApprovalCard(agentName: string): void {
   }
 }
 
+// --- Peak Cards ---
+
+export interface PeakData {
+  id: string;
+  agent_name: string;
+  project_id: string | null;
+  peak_type: string;
+  context: string;
+  options: { label: string; pros: string; cons: string }[];
+  agent_lean: string | null;
+  default_option: number;
+  timeout_seconds: number;
+  status: string;
+  expires_at: number;
+}
+
+let onPeakDecide: ((peakId: string, optionIndex: number) => void) | null = null;
+let onPeakLetAgentDecide: ((peakId: string) => void) | null = null;
+let onPeakPause: ((peakId: string) => void) | null = null;
+
+export function setPeakHandlers(handlers: {
+  onDecide: (peakId: string, optionIndex: number) => void;
+  onLetAgentDecide: (peakId: string) => void;
+  onPause: (peakId: string) => void;
+}): void {
+  onPeakDecide = handlers.onDecide;
+  onPeakLetAgentDecide = handlers.onLetAgentDecide;
+  onPeakPause = handlers.onPause;
+}
+
+export function renderPeakCard(peak: PeakData): void {
+  removePeakCard(peak.id);
+  const el = document.createElement("div");
+  el.className = "peak-card";
+  el.dataset.peakId = peak.id;
+
+  const typeLabels: Record<string, string> = {
+    irreversibility: "Irreversible Action",
+    multiple_paths: "Multiple Paths",
+    info_asymmetry: "Info Asymmetry",
+    drift_check: "Drift Check",
+  };
+
+  const timeLeft = Math.max(0, Math.round((peak.expires_at - Date.now()) / 1000));
+  const mins = Math.floor(timeLeft / 60);
+  const secs = timeLeft % 60;
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "peak-header";
+  header.innerHTML = `
+    <span class="peak-icon">?</span>
+    <span class="peak-title">${escapeHtml(peak.agent_name)} needs your decision</span>
+    <span class="peak-type-badge">${typeLabels[peak.peak_type] || peak.peak_type}</span>
+    <span class="peak-timer" data-peak-timer="${peak.id}">${mins}m ${secs}s</span>
+  `;
+  el.appendChild(header);
+
+  // Context
+  const ctx = document.createElement("div");
+  ctx.className = "peak-context";
+  ctx.textContent = peak.context;
+  el.appendChild(ctx);
+
+  // Agent lean
+  if (peak.agent_lean) {
+    const lean = document.createElement("div");
+    lean.className = "peak-lean";
+    lean.innerHTML = `<strong>Agent recommends:</strong> ${escapeHtml(peak.agent_lean)}`;
+    el.appendChild(lean);
+  }
+
+  // Options
+  if (peak.options.length > 0) {
+    const optionsEl = document.createElement("div");
+    optionsEl.className = "peak-options";
+    peak.options.forEach((opt, idx) => {
+      const optEl = document.createElement("div");
+      optEl.className = `peak-option${idx === peak.default_option ? " peak-option-default" : ""}`;
+      optEl.innerHTML = `
+        <div class="peak-option-header">
+          <span class="peak-option-label">${escapeHtml(opt.label)}</span>
+          ${idx === peak.default_option ? `<span class="peak-option-default-tag">default</span>` : ""}
+        </div>
+        <div class="peak-option-detail">
+          <span class="peak-pro">+ ${escapeHtml(opt.pros)}</span>
+          <span class="peak-con">- ${escapeHtml(opt.cons)}</span>
+        </div>
+      `;
+      const chooseBtn = document.createElement("button");
+      chooseBtn.className = "peak-choose-btn";
+      chooseBtn.textContent = "Choose";
+      chooseBtn.addEventListener("click", () => {
+        if (onPeakDecide) onPeakDecide(peak.id, idx);
+        markPeakResolved(el, `Chose: ${opt.label}`);
+      });
+      optEl.appendChild(chooseBtn);
+      optionsEl.appendChild(optEl);
+    });
+    el.appendChild(optionsEl);
+  }
+
+  // Action bar
+  const actions = document.createElement("div");
+  actions.className = "peak-actions";
+
+  const letAgentBtn = document.createElement("button");
+  letAgentBtn.className = "peak-btn peak-btn-agent";
+  letAgentBtn.textContent = "Let Agent Decide";
+  letAgentBtn.addEventListener("click", () => {
+    if (onPeakLetAgentDecide) onPeakLetAgentDecide(peak.id);
+    markPeakResolved(el, "Deferred to agent");
+  });
+
+  const pauseBtn = document.createElement("button");
+  pauseBtn.className = "peak-btn peak-btn-pause";
+  pauseBtn.textContent = "Let Me Think (+10m)";
+  pauseBtn.addEventListener("click", () => {
+    if (onPeakPause) onPeakPause(peak.id);
+    pauseBtn.textContent = "Extended!";
+    pauseBtn.disabled = true;
+  });
+
+  actions.appendChild(letAgentBtn);
+  actions.appendChild(pauseBtn);
+  el.appendChild(actions);
+
+  messagesEl.appendChild(el);
+  scrollIfNeeded();
+
+  // Start timer countdown
+  startPeakTimer(peak.id, peak.expires_at);
+}
+
+function markPeakResolved(el: HTMLElement, message: string): void {
+  el.classList.add("peak-resolved");
+  const actions = el.querySelector(".peak-actions");
+  if (actions) {
+    actions.innerHTML = `<span class="peak-resolved-msg">${escapeHtml(message)}</span>`;
+  }
+  // Disable all choose buttons
+  el.querySelectorAll(".peak-choose-btn").forEach((btn) => {
+    (btn as HTMLButtonElement).disabled = true;
+  });
+}
+
+export function removePeakCard(peakId: string): void {
+  const existing = messagesEl.querySelector(`[data-peak-id="${peakId}"]`);
+  if (existing && !existing.classList.contains("peak-resolved")) {
+    existing.classList.add("peak-resolved");
+    const actions = existing.querySelector(".peak-actions");
+    if (actions && !actions.querySelector(".peak-resolved-msg")) {
+      actions.innerHTML = `<span class="peak-resolved-msg">Resolved</span>`;
+    }
+    existing.querySelectorAll(".peak-choose-btn").forEach((btn) => {
+      (btn as HTMLButtonElement).disabled = true;
+    });
+  }
+}
+
+export function updatePeakDecision(peakId: string, chosenLabel: string, decidedBy: string): void {
+  const card = messagesEl.querySelector(`[data-peak-id="${peakId}"]`);
+  if (!card) return;
+  card.classList.add("peak-resolved");
+  const actions = card.querySelector(".peak-actions");
+  if (actions) {
+    actions.innerHTML = `<span class="peak-resolved-msg">Decided: ${escapeHtml(chosenLabel)} (by ${escapeHtml(decidedBy)})</span>`;
+  }
+  card.querySelectorAll(".peak-choose-btn").forEach((btn) => {
+    (btn as HTMLButtonElement).disabled = true;
+  });
+}
+
+const peakTimers = new Map<string, number>();
+
+function startPeakTimer(peakId: string, expiresAt: number): void {
+  // Clear existing timer if any
+  const existing = peakTimers.get(peakId);
+  if (existing) clearInterval(existing);
+
+  const timer = window.setInterval(() => {
+    const timerEl = document.querySelector(`[data-peak-timer="${peakId}"]`);
+    if (!timerEl) {
+      clearInterval(timer);
+      peakTimers.delete(peakId);
+      return;
+    }
+    const left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+    if (left <= 0) {
+      timerEl.textContent = "expired";
+      timerEl.classList.add("peak-timer-expired");
+      clearInterval(timer);
+      peakTimers.delete(peakId);
+      return;
+    }
+    const m = Math.floor(left / 60);
+    const s = left % 60;
+    timerEl.textContent = `${m}m ${s}s`;
+    if (left < 60) timerEl.classList.add("peak-timer-urgent");
+  }, 1000);
+
+  peakTimers.set(peakId, timer);
+}
+
 // --- Typing Indicators ---
 
 let typingContainer: HTMLDivElement | null = null;

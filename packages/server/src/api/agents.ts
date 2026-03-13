@@ -5,9 +5,11 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
+import { buildAgentWorkspaceEnv, syncAgentWorkspaceContext } from "../agent-context.js";
 import { getDb, type AgentRow } from "../db/index.js";
 import { broadcast } from "../ws/handler.js";
 import { PROJECT_ROOT, WORKLOG_DIR } from "../config.js";
+import { getProjectById, getWorkplaceById } from "../storage-scope.js";
 import { getAllAgentTmuxStates, getAllAgentContextPercents, getAgentTerminalContent } from "../tmux-monitor.js";
 import {
   clearAgentMetadataKeys,
@@ -91,27 +93,51 @@ Role: ${role}
 
 You are "${name}" in the Claude Crew multi-agent team.
 
-Messages from the group chat will be sent to you directly in the format:
-[sender in group chat]: message content
+## Message format
+Messages from the group chat arrive in this format:
+- Public channel: \`[sender in #channel-id]: message\\n(Reply using send_to_chat with channel="channel-id")\`
+- DM: \`[sender in DM]: message\\n(Reply using send_to_chat with channel="dm-channel-id")\`
+- Group: \`[sender in group "group-id"]: message\\n(Reply using send_to_chat with channel="group-id")\`
 
-## How to respond
-When you receive a group chat message, do the work requested, then call \`send_to_chat\` to post your response/results back to the group chat so the team can see it.
+## How to respond (IMPORTANT)
+1. **First**: call \`read_chat(channel="<channel-id>")\` to read recent conversation history and understand context
+2. **Then**: do the work requested
+3. **Finally**: call \`send_to_chat(message="...", channel="<channel-id>")\` to post your response back
+
+CRITICAL: Always pass the \`channel\` parameter from the incoming message to both \`read_chat\` and \`send_to_chat\`. Never omit it.
 
 ## Available tools
-- \`send_to_chat\` - post a message to the group chat (ALWAYS use this to reply)
-- \`read_chat\` - read recent group chat messages for context
+### Communication
+- \`send_to_chat(message, channel)\` - post a message to a channel (ALWAYS use this to reply)
+- \`read_chat(channel, limit, after_id)\` - read recent messages in a channel for context
 - \`check_mentions\` - check for @mentions directed at you
 - \`list_agents\` - see who else is online
+
+### Shared files
 - \`read_shared_file\` / \`write_shared_file\` / \`list_shared_files\` - shared team files
+
+### Memory (persistent across sessions)
+- \`memory_read\` / \`memory_write\` / \`memory_search\` - personal persistent memory
+- \`memory_status\` - check memory usage
+
+### Project context
+- \`get_project_context\` - get current project info and assignment details
+- \`reflect_on_task\` - submit reflection after completing work
+
+## Workspace pointers
+- Default cwd stays in your own agent workspace
+- \`.crew/current-project\` points to the canonical project root when you have an active assignment
+- \`.crew/current-workplace\` points to the active workplace for derived artifacts and execution outputs
+- \`.crew/context.json\` contains the current project/workplace metadata
 
 ## Collaborating with other agents
 - Use \`@agent-name\` in your \`send_to_chat\` messages to request help from other agents
-- Example: \`send_to_chat("@coder please implement the API endpoint I designed above")\`
+- Example: \`send_to_chat(message="@coder please implement the API endpoint I designed above", channel="project-my-project")\`
 - Use \`list_agents\` to see who is available and their roles
-- Use \`read_chat\` to catch up on recent conversation context before responding
 
 ## Rules
-- ALWAYS reply via \`send_to_chat\` so the team sees your response
+- ALWAYS reply via \`send_to_chat\` with the correct channel parameter
+- ALWAYS read channel context with \`read_chat\` before responding to understand the conversation
 - Keep chat messages concise, put detailed output in shared files if needed
 - You can work on any files on this machine using standard tools
 - Do NOT @mention yourself in messages
@@ -124,23 +150,37 @@ Role: ${role}
 
 You are "${name}" in the Claude Crew multi-agent team.
 
-Messages from the group chat will be sent to you directly in the format:
-[sender in group chat]: message content
+## Message format
+Messages arrive as:
+- Public: \`[sender in #channel-id]: message\\n(Reply using send_to_chat with channel="channel-id")\`
+- DM: \`[sender in DM]: message\\n(Reply using send_to_chat with channel="dm-id")\`
 
-## How to respond
-When you receive a group chat message, do the work requested, then use \`send_to_chat\` to post the result back to the team chat.
+## How to respond (IMPORTANT)
+1. Call \`read_chat(channel="<channel-id>")\` to read recent conversation context
+2. Do the work requested
+3. Call \`send_to_chat(message="...", channel="<channel-id>")\` to reply
+
+CRITICAL: Always pass the \`channel\` parameter from the incoming message.
 
 ## Available tools
-- \`send_to_chat\`
-- \`read_chat\`
-- \`check_mentions\`
-- \`list_agents\`
+- \`send_to_chat(message, channel)\` - reply to a channel
+- \`read_chat(channel, limit, after_id)\` - read channel history for context
+- \`check_mentions\` - check @mentions
+- \`list_agents\` - see online agents
 - \`read_shared_file\` / \`write_shared_file\` / \`list_shared_files\`
+- \`memory_read\` / \`memory_write\` / \`memory_search\` / \`memory_status\`
+- \`get_project_context\` - current project info
 - \`save_worklog\` / \`load_worklog\`
 
+## Workspace pointers
+- \`.crew/current-project\` - canonical project root
+- \`.crew/current-workplace\` - active workplace for outputs
+- \`.crew/context.json\` - project/workplace metadata
+
 ## Rules
-- ALWAYS reply via \`send_to_chat\`
-- Keep messages concise and put large output in shared files
+- ALWAYS reply via \`send_to_chat\` with the correct channel
+- ALWAYS read context with \`read_chat\` before responding
+- Keep messages concise, put large output in shared files
 - Do NOT @mention yourself
 `;
 }
@@ -160,11 +200,13 @@ args = ["${BRIDGE_PATH.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}", "${n
 function createWorkspace(name: string, role: string, provider: AgentProvider): void {
   const agentDir = path.join(AGENTS_DIR, name);
   fs.mkdirSync(agentDir, { recursive: true });
+  fs.mkdirSync(path.join(agentDir, ".crew"), { recursive: true });
 
   if (provider === "codex") {
     fs.mkdirSync(path.join(agentDir, ".codex"), { recursive: true });
     fs.writeFileSync(path.join(agentDir, ".codex/config.toml"), createCodexConfigToml(name, role));
     fs.writeFileSync(path.join(agentDir, "AGENTS.md"), createCodexInstructions(name, role));
+    syncAgentWorkspaceContext(name);
     return;
   }
 
@@ -179,6 +221,7 @@ function createWorkspace(name: string, role: string, provider: AgentProvider): v
   };
   fs.writeFileSync(path.join(agentDir, ".mcp.json"), JSON.stringify(mcpConfig, null, 2) + "\n");
   fs.writeFileSync(path.join(agentDir, "CLAUDE.md"), createClaudeInstructions(name, role));
+  syncAgentWorkspaceContext(name);
 }
 
 // --- Helper: kill tmux session + bridge processes ---
@@ -293,6 +336,8 @@ router.post("/create", (req: Request, res: Response) => {
     ).run(agentId, name, agentProvider, agentRole, now, now);
   }
 
+  syncAgentWorkspaceContext(name);
+
   broadcast({ type: "agent:status", data: { name, status: "offline", role: agentRole, provider: agentProvider } });
 
   // Optionally wake (start provider runtime)
@@ -369,11 +414,25 @@ router.post("/deregister", (req: Request, res: Response) => {
 });
 
 // GET /agents
-router.get("/", (_req: Request, res: Response) => {
+router.get("/", (req: Request, res: Response) => {
+  const project_id = req.query.project_id as string | undefined;
   const db = getDb();
-  const agents = db
-    .prepare("SELECT id, name, provider, role, status, last_heartbeat, registered_at, metadata FROM agents ORDER BY name")
-    .all() as AgentRow[];
+
+  let agents: AgentRow[];
+  if (project_id) {
+    agents = db.prepare(`
+      SELECT a.id, a.name, a.provider, a.role, a.status, a.last_heartbeat, a.registered_at, a.metadata
+      FROM agents a
+      INNER JOIN project_agents pa ON pa.agent_name = a.name
+      WHERE pa.project_id = ? AND pa.status = 'active'
+      ORDER BY a.name
+    `).all(project_id) as AgentRow[];
+  } else {
+    agents = db
+      .prepare("SELECT id, name, provider, role, status, last_heartbeat, registered_at, metadata FROM agents ORDER BY name")
+      .all() as AgentRow[];
+  }
+
   const tmuxStates = getAllAgentTmuxStates();
   const contextPercents = getAllAgentContextPercents();
   const result = agents.map((a) => ({
@@ -523,12 +582,85 @@ export function getAgentConfig(agentName: string): AgentConfig {
   }
 }
 
-/** Build the claude CLI command with optional --model and --effort flags */
+/** Get the current project context string for an agent (if assigned to a project) */
+export function getAgentProjectContext(agentName: string): string | null {
+  const db = getDb();
+  // Check if agent is assigned to any active project
+  const assignment = db.prepare(`
+    SELECT pa.project_id, pa.active_workplace_id, p.name, p.description, p.tech_stack, p.directory
+    FROM project_agents pa
+    JOIN projects p ON p.id = pa.project_id
+    WHERE pa.agent_name = ? AND pa.status = 'active' AND p.status = 'active'
+    ORDER BY pa.assigned_at DESC LIMIT 1
+  `).get(agentName) as {
+    project_id: string;
+    active_workplace_id: string | null;
+    name: string;
+    description: string;
+    tech_stack: string;
+    directory: string;
+  } | undefined;
+
+  if (!assignment) return null;
+
+  const techStack = JSON.parse(assignment.tech_stack) as string[];
+  const standards = db
+    .prepare("SELECT name, content FROM shared_standards WHERE status = 'active' ORDER BY priority DESC")
+    .all() as { name: string; content: string }[];
+
+  const agents = db
+    .prepare("SELECT agent_name, role_in_project FROM project_agents WHERE project_id = ? AND status = 'active'")
+    .all(assignment.project_id) as { agent_name: string; role_in_project: string }[];
+  const project = getProjectById(assignment.project_id);
+  const activeWorkplace = assignment.active_workplace_id ? getWorkplaceById(assignment.active_workplace_id) : null;
+
+  let ctx = `## Active Project: ${assignment.name}\n${assignment.description}\n`;
+  if (techStack.length > 0) ctx += `### Tech Stack: ${techStack.join(", ")}\n`;
+  if (project?.directory) {
+    ctx += `### Canonical Project Root: ${project.directory}\n`;
+    ctx += `Store durable code/specs/reference docs and permanent decision memory here.\n`;
+  }
+  if (activeWorkplace) {
+    ctx += `### Active Workplace: ${activeWorkplace.name}\n`;
+    ctx += `Directory: ${activeWorkplace.directory}\n`;
+    ctx += `Use this workplace for uploads, experiments, revisions, generated outputs, and other derived artifacts.\n`;
+  }
+  ctx += "### Stable Workspace Pointers: ./.crew/current-project, ./.crew/current-workplace, ./.crew/context.json\n";
+  if (standards.length > 0) {
+    ctx += `### Standards:\n`;
+    for (const s of standards) ctx += `- **${s.name}**: ${s.content}\n`;
+  }
+  if (agents.length > 0) {
+    ctx += `### Team: ${agents.map(a => `${a.agent_name}${a.role_in_project ? ` (${a.role_in_project})` : ""}`).join(", ")}\n`;
+  }
+
+  // Enforce size budget (~3000 tokens ~ 12000 chars)
+  if (ctx.length > 12000) {
+    ctx = ctx.slice(0, 11900) + "\n...(truncated, call get_project_context for full details)";
+  }
+  return ctx;
+}
+
+/** Build the claude CLI command with optional --model, --effort, and --append-system-prompt flags */
 export function buildClaudeCmd(agentDir: string, claudePath: string, agentName: string): string {
   const config = getAgentConfig(agentName);
-  let cmd = `unset CLAUDECODE && cd '${agentDir}' && '${claudePath}'`;
+  const env = buildAgentWorkspaceEnv(agentName);
+  const exports = Object.entries(env)
+    .map(([key, value]) => `${key}='${value.replace(/'/g, "'\\''")}'`)
+    .join(" ");
+  const mcpConfigPath = `${agentDir}/.mcp.json`;
+  let cmd = `unset CLAUDECODE && export ${exports} && cd '${agentDir}' && '${claudePath}' --mcp-config '${mcpConfigPath}' --strict-mcp-config`;
   if (config.model) cmd += ` --model ${config.model}`;
   if (config.effort) cmd += ` --effort ${config.effort}`;
+
+  // Layer 2: Inject project context via --append-system-prompt
+  const projectContext = getAgentProjectContext(agentName);
+  if (projectContext) {
+    // Escape single quotes for shell safety
+    const escaped = projectContext.replace(/'/g, "'\\''");
+    cmd += ` --append-system-prompt '${escaped}'`;
+  }
+
   return cmd;
 }
 

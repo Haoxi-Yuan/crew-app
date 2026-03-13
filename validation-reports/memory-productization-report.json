@@ -1,0 +1,467 @@
+{
+  "generated_at": "2026-03-13T05:58:09.315Z",
+  "repo_root": "/Users/yuan/Projects/claude-crew",
+  "summary": {
+    "passed": 27,
+    "failed": 0,
+    "skipped": 0
+  },
+  "runtimes": [
+    {
+      "label": "baseline",
+      "runtime_root": "/var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-baseline-Yv3w3t",
+      "notes": [
+        "project files: docs/decision.md, workplaces/default/outputs/run-1.json"
+      ]
+    },
+    {
+      "label": "target",
+      "runtime_root": "/var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-target-F3sBns",
+      "notes": [
+        "project files: workplaces/default/artifacts/build.log",
+        "derived scope example: workplace"
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "suite": "baseline",
+      "name": "project root starts canonical-only",
+      "status": "passed",
+      "duration_ms": 1,
+      "details": {
+        "project_directory": "/var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-baseline-Yv3w3t/data/projects/validation-baseline-project"
+      }
+    },
+    {
+      "suite": "baseline",
+      "name": "first derived file auto-creates default workplace",
+      "status": "passed",
+      "duration_ms": 0,
+      "details": {
+        "workplace_directory": "/var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-baseline-Yv3w3t/data/projects/validation-baseline-project/workplaces/default",
+        "file": "/var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-baseline-Yv3w3t/data/projects/validation-baseline-project/workplaces/default/outputs/run-1.json"
+      }
+    },
+    {
+      "suite": "baseline",
+      "name": "canonical file stays in project root",
+      "status": "passed",
+      "duration_ms": 0,
+      "details": {
+        "file": "/var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-baseline-Yv3w3t/data/projects/validation-baseline-project/docs/decision.md"
+      }
+    },
+    {
+      "suite": "baseline",
+      "name": "project aggregate file listing returns project and workplace assets",
+      "status": "passed",
+      "duration_ms": 1,
+      "details": [
+        {
+          "path": "docs/decision.md",
+          "scope": "project"
+        },
+        {
+          "path": "outputs/run-1.json",
+          "scope": "workplace"
+        }
+      ]
+    },
+    {
+      "suite": "baseline",
+      "name": "default workplace gets a channel immediately",
+      "status": "passed",
+      "duration_ms": 1,
+      "details": [
+        {
+          "id": "project-validation-baseline-project",
+          "workplace_id": null
+        },
+        {
+          "id": "workplace-validation-baseline-project-default",
+          "workplace_id": "4548cac4-d3fa-44e4-b592-39b83023173a"
+        }
+      ]
+    },
+    {
+      "suite": "baseline",
+      "name": "legacy project_id bridge routes memories by intent",
+      "status": "passed",
+      "duration_ms": 0,
+      "details": {
+        "decision_scope": "project",
+        "daily_scope": "workplace"
+      }
+    },
+    {
+      "suite": "baseline",
+      "name": "duplicate memory is blocked only within same scope",
+      "status": "passed",
+      "duration_ms": 2,
+      "details": {
+        "duplicate_status": 409,
+        "cross_scope_id": "92f15251-cdd4-4284-8e6f-681c4f2db843"
+      }
+    },
+    {
+      "suite": "baseline",
+      "name": "project stats aggregate project and workplace scopes",
+      "status": "passed",
+      "duration_ms": 0,
+      "details": {
+        "agent_name": "author",
+        "total": 3,
+        "by_status": {
+          "active": 3
+        },
+        "by_category": {
+          "daily": 1,
+          "decision": 2
+        },
+        "avg_retrievability": 1,
+        "recently_accessed": [
+          {
+            "id": "92f15251-cdd4-4284-8e6f-681c4f2db843",
+            "heading": "Explicit workplace duplicate",
+            "category": "decision",
+            "access_count": 0,
+            "last_accessed_at": 1773381488796
+          },
+          {
+            "id": "ca51ec52-10ea-441f-9e07-490e1e641440",
+            "heading": "Derived note",
+            "category": "daily",
+            "access_count": 0,
+            "last_accessed_at": 1773381488794
+          },
+          {
+            "id": "90842986-4fd7-4db0-8663-574a9fa812c7",
+            "heading": "Canonical peak memory",
+            "category": "decision",
+            "access_count": 0,
+            "last_accessed_at": 1773381488792
+          }
+        ],
+        "scope_type": "project+workplaces",
+        "scope_id": "8f3547c9-860c-4709-a19a-a728d915ac17"
+      }
+    },
+    {
+      "suite": "baseline",
+      "name": "reindex without Ollama fails loudly instead of pretending success",
+      "status": "passed",
+      "duration_ms": 1,
+      "details": {
+        "error": "Ollama is not running. Start with: ollama serve"
+      }
+    },
+    {
+      "suite": "target",
+      "name": "workplace switching updates active execution context",
+      "status": "passed",
+      "duration_ms": 0,
+      "details": {
+        "id": 1,
+        "project_id": "90f286a5-412b-4b7f-b2d7-c7e1e166c74e",
+        "agent_name": "analyst-a",
+        "role_in_project": "lead",
+        "assignment_type": "dedicated",
+        "status": "active",
+        "active_workplace_id": "9d876c1a-54ef-43b9-ad01-bee98b111585",
+        "assigned_at": 1773381489069
+      }
+    },
+    {
+      "suite": "target",
+      "name": "project and workplace context endpoints describe the split clearly",
+      "status": "passed",
+      "duration_ms": 2,
+      "details": {
+        "project_context_excerpt": [
+          "## Active Project: Validation Target Project",
+          "Target model suite",
+          "### Tech Stack: ts, sqlite",
+          "### Canonical Project Root: /var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-target-F3sBns/data/projects/validation-target-project"
+        ],
+        "workplace_context_excerpt": [
+          "## Workplace: Experiments",
+          "Project: Validation Target Project",
+          "Directory: /var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-target-F3sBns/data/projects/validation-target-project/workplaces/experiments",
+          "Kind: derived"
+        ]
+      }
+    },
+    {
+      "suite": "target",
+      "name": "project channel listing includes workplace channels",
+      "status": "passed",
+      "duration_ms": 0,
+      "details": [
+        "workplace-validation-target-project-default",
+        "workplace-validation-target-project-experiments"
+      ]
+    },
+    {
+      "suite": "target",
+      "name": "memory CRUD works across all categories",
+      "status": "passed",
+      "duration_ms": 5,
+      "details": {
+        "category_scopes": {
+          "contact": "workplace",
+          "preference": "workplace",
+          "decision": "project",
+          "project": "project",
+          "pattern": "workplace",
+          "feedback": "workplace",
+          "daily": "workplace"
+        }
+      }
+    },
+    {
+      "suite": "target",
+      "name": "search ranking changes after direct memory access",
+      "status": "passed",
+      "duration_ms": 8,
+      "details": [
+        {
+          "id": "e0922651-3f17-472b-b7ef-21e7434e7b0e",
+          "score": 1.03
+        },
+        {
+          "id": "07336541-ca86-4741-8b88-ad4db9fb3deb",
+          "score": 0.9
+        }
+      ]
+    },
+    {
+      "suite": "target",
+      "name": "memory consolidate and stats work for project+workplace scope",
+      "status": "passed",
+      "duration_ms": 3,
+      "details": {
+        "consolidation": {
+          "agent_name": "author",
+          "total_processed": 9,
+          "promoted": 1,
+          "archived": 1,
+          "promoted_ids": [
+            "90b70b92-55d0-401a-b1f4-c8b5c6e989cc"
+          ],
+          "archived_ids": [
+            "b3d0266d-11c1-41e6-b80b-1944fbdedb93"
+          ],
+          "scope_type": "project+workplaces",
+          "scope_id": "90f286a5-412b-4b7f-b2d7-c7e1e166c74e"
+        },
+        "stats": {
+          "agent_name": "author",
+          "total": 11,
+          "by_status": {
+            "active": 7,
+            "archived": 1,
+            "permanent": 2,
+            "promoted": 1
+          },
+          "by_category": {
+            "contact": 1,
+            "daily": 4,
+            "decision": 1,
+            "feedback": 1,
+            "pattern": 1,
+            "preference": 1,
+            "project": 1
+          },
+          "avg_retrievability": 1,
+          "recently_accessed": [
+            {
+              "id": "ded5fba4-b2af-4583-878d-4412bca0d44c",
+              "heading": "contact heading",
+              "category": "contact",
+              "access_count": 1,
+              "last_accessed_at": 1773381489101
+            },
+            {
+              "id": "1830c423-3a80-4279-aa55-2ef7c327f8c9",
+              "heading": "preference heading",
+              "category": "preference",
+              "access_count": 1,
+              "last_accessed_at": 1773381489101
+            },
+            {
+              "id": "c3f2bbf0-1a3f-458c-8169-73c3fcf9d511",
+              "heading": "feedback heading",
+              "category": "feedback",
+              "access_count": 1,
+              "last_accessed_at": 1773381489101
+            },
+            {
+              "id": "e0922651-3f17-472b-b7ef-21e7434e7b0e",
+              "heading": "ranking probe shared",
+              "category": "daily",
+              "access_count": 2,
+              "last_accessed_at": 1773381489101
+            },
+            {
+              "id": "07336541-ca86-4741-8b88-ad4db9fb3deb",
+              "heading": "ranking probe shared",
+              "category": "daily",
+              "access_count": 1,
+              "last_accessed_at": 1773381489101
+            }
+          ],
+          "scope_type": "project+workplaces",
+          "scope_id": "90f286a5-412b-4b7f-b2d7-c7e1e166c74e"
+        }
+      }
+    },
+    {
+      "suite": "target",
+      "name": "reindex succeeds with a mock Ollama service",
+      "status": "passed",
+      "duration_ms": 4,
+      "details": {
+        "reindex": {
+          "total": 6,
+          "indexed": 6,
+          "failed": 0
+        },
+        "embedded_count": 10
+      }
+    },
+    {
+      "suite": "target",
+      "name": "peak invalid payload is rejected",
+      "status": "passed",
+      "duration_ms": 1,
+      "details": {
+        "error": "agent_name, peak_type, and context are required"
+      }
+    },
+    {
+      "suite": "target",
+      "name": "peak decide persists durable memory and durable resume message",
+      "status": "passed",
+      "duration_ms": 0,
+      "details": {
+        "decision_memory": {
+          "status": "permanent",
+          "category": "decision",
+          "scope_type": "project",
+          "scope_id": "90f286a5-412b-4b7f-b2d7-c7e1e166c74e"
+        },
+        "settlement_message": {
+          "channel_id": "workplace-validation-target-project-experiments",
+          "sender_name": "peak-system",
+          "content": "@analyst-a peak resolved. Continue now using this decision.\nType: multiple_paths\nDecision: fast\nNote: Prefer speed for this validation\nDecided by: user",
+          "message_type": "peak_settlement"
+        },
+        "delivery_status": "sent"
+      }
+    },
+    {
+      "suite": "target",
+      "name": "peak decision reaches waiting tmux runtime",
+      "status": "passed",
+      "duration_ms": 151,
+      "details": {
+        "tmux_capture": "/var/folders/0q/mmq0dkqj6cg7k1zzbxs7b6t80000gn/T/claude-crew-validation-target-F3sBns/analyst-a-tmux-capture.log"
+      }
+    },
+    {
+      "suite": "target",
+      "name": "let-agent-decide writes a durable decision memory",
+      "status": "passed",
+      "duration_ms": 4,
+      "details": {
+        "ok": true,
+        "chosen_index": 1,
+        "chosen_option": {
+          "label": "aggressive",
+          "pros": "",
+          "cons": ""
+        }
+      }
+    },
+    {
+      "suite": "target",
+      "name": "timeout processing writes a durable decision memory",
+      "status": "passed",
+      "duration_ms": 5,
+      "details": {
+        "processed": {
+          "expired": 1
+        },
+        "expired": {
+          "status": "expired",
+          "decision_index": 0
+        }
+      }
+    },
+    {
+      "suite": "target",
+      "name": "repeated peak decisions do not auto-extract SOPs below consensus threshold",
+      "status": "passed",
+      "duration_ms": 12,
+      "details": {
+        "peak_pattern_standards": 0
+      }
+    },
+    {
+      "suite": "target",
+      "name": "reflection with no proposed updates stays pending and empty",
+      "status": "passed",
+      "duration_ms": 2,
+      "details": {
+        "id": "a62147e1-fcf5-4b6e-a598-9ba481014e92",
+        "status": "pending",
+        "auto_results": []
+      }
+    },
+    {
+      "suite": "target",
+      "name": "reflection auto-apply requires consensus, budget, and no contradiction",
+      "status": "passed",
+      "duration_ms": 6,
+      "details": {
+        "consensus_standard": "API Naming",
+        "contradiction_reason": "potential contradiction with existing standard: Explicit Imports",
+        "direct_standard": "8fba792f-4987-4425-a372-e82f7e469551"
+      }
+    },
+    {
+      "suite": "target",
+      "name": "manual reflection review applies pending updates",
+      "status": "passed",
+      "duration_ms": 2,
+      "details": {
+        "ok": true,
+        "status": "manually_approved"
+      }
+    },
+    {
+      "suite": "target",
+      "name": "standards history and rollback remain intact",
+      "status": "passed",
+      "duration_ms": 2,
+      "details": {
+        "ok": true,
+        "version": 3,
+        "content": "Version one"
+      }
+    },
+    {
+      "suite": "target",
+      "name": "project aggregate file list keeps scope metadata for UX diagnostics",
+      "status": "passed",
+      "duration_ms": 1,
+      "details": [
+        {
+          "path": "artifacts/build.log",
+          "scope": "workplace:Default Workplace"
+        }
+      ]
+    }
+  ]
+}

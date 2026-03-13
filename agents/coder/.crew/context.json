@@ -1,0 +1,10 @@
+{
+  "agent_name": "Coder",
+  "agent_dir": "/Users/yuan/Projects/claude-crew/agents/Coder",
+  "project": null,
+  "workplace": null,
+  "pointers": {
+    "current_project": null,
+    "current_workplace": null
+  }
+}

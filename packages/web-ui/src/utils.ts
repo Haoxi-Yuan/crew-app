@@ -1,5 +1,37 @@
 // Shared utility functions
 
+/**
+ * Custom confirm dialog that works in WKWebView (where native confirm() is blocked).
+ * Returns a Promise<boolean> resolved when user clicks OK or Cancel.
+ */
+export function showConfirm(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="confirm-box">
+        <div class="confirm-message">${escapeHtml(message)}</div>
+        <div class="confirm-actions">
+          <button class="confirm-btn cancel">Cancel</button>
+          <button class="confirm-btn ok">OK</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const cleanup = (result: boolean) => {
+      overlay.remove();
+      resolve(result);
+    };
+
+    overlay.querySelector(".confirm-btn.ok")!.addEventListener("click", () => cleanup(true));
+    overlay.querySelector(".confirm-btn.cancel")!.addEventListener("click", () => cleanup(false));
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) cleanup(false);
+    });
+  });
+}
+
 const AVATAR_COLORS = [
   "#3b82f6", "#8b5cf6", "#ec4899", "#ef4444", "#f59e0b",
   "#22c55e", "#06b6d4", "#6366f1", "#14b8a6", "#f97316",

@@ -13,18 +13,24 @@ function parseChannel(ch: ChannelRow) {
 // GET /channels
 router.get("/", (req: Request, res: Response) => {
   const status = req.query.status as string | undefined;
+  const project_id = req.query.project_id as string | undefined;
   const db = getDb();
 
-  let channels: ChannelRow[];
+  let sql = "SELECT * FROM channels WHERE 1=1";
+  const params: unknown[] = [];
+
   if (status) {
-    channels = db
-      .prepare("SELECT * FROM channels WHERE status = ? ORDER BY type ASC, created_at ASC")
-      .all(status) as ChannelRow[];
-  } else {
-    channels = db
-      .prepare("SELECT * FROM channels ORDER BY type ASC, created_at ASC")
-      .all() as ChannelRow[];
+    sql += " AND status = ?";
+    params.push(status);
   }
+  if (project_id) {
+    sql += " AND project_id = ?";
+    params.push(project_id);
+  }
+
+  sql += " ORDER BY type ASC, created_at ASC";
+
+  const channels = db.prepare(sql).all(...params) as ChannelRow[];
   res.json(channels.map(parseChannel));
 });
 
@@ -166,6 +172,10 @@ router.delete("/:id", (req: Request, res: Response) => {
   }
 
   const db = getDb();
+  // Delete in FK-safe order: pending_mentions -> messages -> channel
+  db.prepare(
+    "DELETE FROM pending_mentions WHERE message_id IN (SELECT id FROM messages WHERE channel_id = ?)"
+  ).run(id);
   db.prepare("DELETE FROM messages WHERE channel_id = ?").run(id);
   db.prepare("DELETE FROM channels WHERE id = ?").run(id);
 

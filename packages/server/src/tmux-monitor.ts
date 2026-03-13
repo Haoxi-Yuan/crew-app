@@ -606,6 +606,18 @@ async function cycleAgentSession(agentName: string): Promise<void> {
   const sessionName = `crew-${agentName}`;
   const agentDir = path.join(PROJECT_ROOT, "agents", agentName);
 
+  // Prompt agent to reflect before cycle (best-effort, non-blocking)
+  try {
+    const sessionCheck = await execFileAsync("tmux", ["has-session", "-t", sessionName]).catch(() => null);
+    if (sessionCheck) {
+      // Send a prompt asking the agent to save worklog and reflect
+      const reflectMsg = "Your session is about to restart due to high context usage. Please call save_worklog and reflect_on_task now to preserve your state and learnings.";
+      await execFileAsync("tmux", ["send-keys", "-t", sessionName, reflectMsg, "Enter"]);
+      // Brief pause to let agent process the message
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  } catch { /* best effort */ }
+
   // Notify via system message in chat (upsert: one row per agent, update in-place)
   try {
     const db = getDb();

@@ -31,7 +31,13 @@ export interface AgentInfo {
 }
 
 export interface SharedFileInfo {
+  id?: string;
   path: string;
+  scope_type?: string;
+  scope_id?: string;
+  project_id?: string | null;
+  workplace_id?: string | null;
+  scope_name?: string | null;
   created_by: string;
   description: string;
   updated_at: number;
@@ -144,27 +150,50 @@ export async function listAgents(): Promise<AgentInfo[]> {
 }
 
 export async function readSharedFile(
-  filePath: string
-): Promise<{ path: string; content: string; created_by: string; description: string; updated_at: number }> {
+  filePath: string,
+  options?: { projectId?: string; workplaceId?: string; scopeType?: string; scopeId?: string }
+): Promise<{ path: string; content: string; created_by: string; description: string; updated_at: number; scope_type?: string; scope_id?: string; project_id?: string | null; workplace_id?: string | null }> {
+  const params = new URLSearchParams();
+  if (options?.projectId) params.set("project_id", options.projectId);
+  if (options?.workplaceId) params.set("workplace_id", options.workplaceId);
+  if (options?.scopeType) params.set("scope_type", options.scopeType);
+  if (options?.scopeId) params.set("scope_id", options.scopeId);
+  const qs = params.toString();
   return (await request(
-    `/shared-files/${encodeURIComponent(filePath)}`
-  )) as { path: string; content: string; created_by: string; description: string; updated_at: number };
+    `/shared-files/${encodeURIComponent(filePath)}${qs ? `?${qs}` : ""}`
+  )) as { path: string; content: string; created_by: string; description: string; updated_at: number; scope_type?: string; scope_id?: string; project_id?: string | null; workplace_id?: string | null };
 }
 
 export async function writeSharedFile(
   agentName: string,
   filePath: string,
   content: string,
-  description?: string
+  description?: string,
+  options?: { projectId?: string; workplaceId?: string; scopeType?: string; scopeId?: string; artifactKind?: string }
 ): Promise<void> {
   await request(`/shared-files/${encodeURIComponent(filePath)}`, {
     method: "PUT",
-    body: JSON.stringify({ content, created_by: agentName, description }),
+    body: JSON.stringify({
+      content,
+      created_by: agentName,
+      description,
+      project_id: options?.projectId,
+      workplace_id: options?.workplaceId,
+      scope_type: options?.scopeType,
+      scope_id: options?.scopeId,
+      artifact_kind: options?.artifactKind,
+    }),
   });
 }
 
-export async function listSharedFiles(): Promise<SharedFileInfo[]> {
-  return (await request("/shared-files")) as SharedFileInfo[];
+export async function listSharedFiles(options?: { projectId?: string; workplaceId?: string; scopeType?: string; scopeId?: string }): Promise<SharedFileInfo[]> {
+  const params = new URLSearchParams();
+  if (options?.projectId) params.set("project_id", options.projectId);
+  if (options?.workplaceId) params.set("workplace_id", options.workplaceId);
+  if (options?.scopeType) params.set("scope_type", options.scopeType);
+  if (options?.scopeId) params.set("scope_id", options.scopeId);
+  const qs = params.toString();
+  return (await request(`/shared-files${qs ? `?${qs}` : ""}`)) as SharedFileInfo[];
 }
 
 // --- Worklog ---
@@ -318,13 +347,15 @@ export async function memorySearch(
   category?: string,
   includeWeak?: boolean,
   limit?: number,
-  summaryOnly?: boolean
+  summaryOnly?: boolean,
+  projectId?: string
 ): Promise<MemorySearchResult> {
   const params = new URLSearchParams({ q: query, agent_name: agentName });
   if (category) params.set("category", category);
   if (includeWeak) params.set("include_weak", "true");
   if (limit) params.set("limit", String(limit));
   if (summaryOnly !== undefined) params.set("summary_only", String(summaryOnly));
+  if (projectId) params.set("project_id", projectId);
   return (await request(`/memory/search?${params}`)) as MemorySearchResult;
 }
 
@@ -334,7 +365,8 @@ export async function memoryWrite(
   heading: string,
   content: string,
   importance?: number,
-  emotionalWeight?: number
+  emotionalWeight?: number,
+  projectId?: string
 ): Promise<{ id: string; status: string; activation: number; retrievability: number }> {
   return (await request("/memory/entries", {
     method: "POST",
@@ -345,6 +377,7 @@ export async function memoryWrite(
       content,
       importance,
       emotional_weight: emotionalWeight,
+      project_id: projectId || null,
     }),
   })) as { id: string; status: string; activation: number; retrievability: number };
 }
@@ -353,17 +386,193 @@ export async function memoryRead(id: string): Promise<MemoryReadResult> {
   return (await request(`/memory/entries/${encodeURIComponent(id)}`)) as MemoryReadResult;
 }
 
-export async function memoryStats(agentName: string): Promise<MemoryStats> {
-  return (await request(`/memory/stats?agent_name=${encodeURIComponent(agentName)}`)) as MemoryStats;
+export async function memoryStats(agentName: string, projectId?: string): Promise<MemoryStats> {
+  const params = new URLSearchParams({ agent_name: agentName });
+  if (projectId) params.set("project_id", projectId);
+  return (await request(`/memory/stats?${params}`)) as MemoryStats;
 }
 
-export async function memoryConsolidate(agentName: string): Promise<{
+export async function memoryConsolidate(agentName: string, projectId?: string): Promise<{
   total_processed: number;
   promoted: number;
   archived: number;
 }> {
   return (await request("/memory/consolidate", {
     method: "POST",
-    body: JSON.stringify({ agent_name: agentName }),
+    body: JSON.stringify({ agent_name: agentName, project_id: projectId || null }),
   })) as { total_processed: number; promoted: number; archived: number };
+}
+
+// --- Project Context ---
+
+export interface ProjectContext {
+  project_id: string;
+  context: string;
+}
+
+export async function getProjectContext(projectId: string): Promise<ProjectContext> {
+  return (await request(`/projects/${encodeURIComponent(projectId)}/context`)) as ProjectContext;
+}
+
+export async function getWorkplaceContext(projectId: string, workplaceId: string): Promise<{ project_id: string; workplace_id: string; context: string }> {
+  return (await request(`/projects/${encodeURIComponent(projectId)}/workplaces/${encodeURIComponent(workplaceId)}/context`)) as {
+    project_id: string;
+    workplace_id: string;
+    context: string;
+  };
+}
+
+export async function listProjectWorkplaces(projectId: string): Promise<Array<{ id: string; name: string; slug: string; kind: string; directory: string }>> {
+  return (await request(`/projects/${encodeURIComponent(projectId)}/workplaces`)) as Array<{ id: string; name: string; slug: string; kind: string; directory: string }>;
+}
+
+export async function getAgentCurrentProject(agentName: string): Promise<{ project_id: string; name: string } | null> {
+  try {
+    const projects = await request(`/projects/by-agent/${encodeURIComponent(agentName)}`) as { project_id: string; name: string }[];
+    return projects.length > 0 ? projects[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+// --- Reflections ---
+
+export interface ReflectionResult {
+  id: string;
+  status: string;
+  auto_results: { index: number; action: string; reason: string }[];
+}
+
+export async function submitReflection(
+  agentName: string,
+  projectId: string,
+  triggerType: string,
+  taskSummary: string,
+  lessonsLearned: unknown[],
+  proposedUpdates: unknown[],
+  confidence: number
+): Promise<ReflectionResult> {
+  return (await request("/reflections", {
+    method: "POST",
+    body: JSON.stringify({
+      agent_name: agentName,
+      project_id: projectId,
+      trigger_type: triggerType,
+      task_summary: taskSummary,
+      lessons_learned: lessonsLearned,
+      proposed_updates: proposedUpdates,
+      confidence,
+    }),
+  })) as ReflectionResult;
+}
+
+// --- Standards ---
+
+export interface StandardInfo {
+  id: string;
+  category: string;
+  name: string;
+  content: string;
+  priority: number;
+  status: string;
+}
+
+export async function listStandards(): Promise<StandardInfo[]> {
+  return (await request("/standards?status=active")) as StandardInfo[];
+}
+
+export async function proposeStandardUpdate(
+  agentName: string,
+  projectId: string,
+  update: {
+    action: string;
+    section: string;
+    current_text?: string;
+    proposed_text: string;
+    rationale: string;
+    confidence: number;
+  }
+): Promise<ReflectionResult> {
+  // Wrap single update as a reflection with one proposed_update
+  return (await request("/reflections", {
+    method: "POST",
+    body: JSON.stringify({
+      agent_name: agentName,
+      project_id: projectId,
+      trigger_type: "manual",
+      task_summary: `Standard update proposal: ${update.section}`,
+      lessons_learned: [],
+      proposed_updates: [update],
+      confidence: update.confidence,
+    }),
+  })) as ReflectionResult;
+}
+
+// --- Peaks ---
+
+export interface PeakOption {
+  label: string;
+  pros: string;
+  cons: string;
+}
+
+export interface PeakResult {
+  id: string;
+  agent_name: string;
+  peak_type: string;
+  context: string;
+  options: PeakOption[];
+  status: string;
+  expires_at: number;
+}
+
+export interface PeakDecision {
+  peak_id: string;
+  chosen_option: PeakOption;
+  chosen_index: number;
+  note: string | null;
+  decided_by: string;
+}
+
+export async function escalatePeak(
+  agentName: string,
+  projectId: string | undefined,
+  peakType: string,
+  context: string,
+  options: PeakOption[],
+  agentLean?: string,
+  defaultOption?: number,
+  timeoutSeconds?: number
+): Promise<PeakResult> {
+  return (await request("/peaks", {
+    method: "POST",
+    body: JSON.stringify({
+      agent_name: agentName,
+      project_id: projectId || null,
+      peak_type: peakType,
+      context,
+      options,
+      agent_lean: agentLean,
+      default_option: defaultOption ?? 0,
+      timeout_seconds: timeoutSeconds ?? 300,
+    }),
+  })) as PeakResult;
+}
+
+export async function checkPeakDecision(peakId: string): Promise<{
+  id: string;
+  status: string;
+  decision_index: number | null;
+  decision_note: string | null;
+  decided_by: string | null;
+  options: PeakOption[];
+}> {
+  return (await request(`/peaks/${encodeURIComponent(peakId)}`)) as {
+    id: string;
+    status: string;
+    decision_index: number | null;
+    decision_note: string | null;
+    decided_by: string | null;
+    options: PeakOption[];
+  };
 }

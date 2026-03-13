@@ -40,19 +40,20 @@ export async function forwardToAgent(
   } else if (channelType === "group") {
     input = `[${senderName} in group "${channelId}"]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`;
   } else {
-    input = `[${senderName} in group chat]: ${content}`;
+    input = `[${senderName} in #${channelId}]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`;
   }
 
   try {
     // Send the text to the tmux session
-    // Use send-keys to type it into Claude Code's input
+    // Send the full text literally, then submit it as a single prompt.
     await execFileAsync("tmux", [
       "send-keys",
       "-t",
       sessionName,
+      "-l",
       input,
-      "Enter",
     ]);
+    await execFileAsync("tmux", ["send-keys", "-t", sessionName, "Enter"]);
     return true;
   } catch (err) {
     console.error(

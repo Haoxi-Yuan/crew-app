@@ -24,6 +24,9 @@ export interface MemoryEntry {
   archived_at: number | null;
   linked_ids: string; // JSON array of related memory IDs
   embedding: Buffer | null;
+  project_id?: string | null;
+  scope_type?: string;
+  scope_id?: string;
 }
 
 const ACT_R_DECAY = 0.5;

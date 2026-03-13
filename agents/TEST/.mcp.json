@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "claude-crew": {
+      "command": "/Users/yuan/.nvm/versions/node/v22.14.0/bin/node",
+      "args": [
+        "/Users/yuan/Projects/claude-crew/packages/mcp-bridge/dist/index.js",
+        "TEST",
+        "TEST ALL OF THE FUNCTION IN CREWAPP"
+      ]
+    }
+  }
+}

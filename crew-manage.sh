@@ -10,23 +10,43 @@ PORT="${CREW_PORT:-3140}"
 SERVER_DIST="$CREW_DIR/packages/server/dist/index.js"
 LOG_FILE="$CREW_DIR/data/server.log"
 
+node_supports_server() {
+    local candidate="$1"
+    [ -x "$candidate" ] || return 1
+    (
+        cd "$CREW_DIR/packages/server" &&
+        "$candidate" -e "require('better-sqlite3')" >/dev/null 2>&1
+    )
+}
+
 # --- Node.js detection ---
 find_node() {
-    local node_bin
-    node_bin="$(which node 2>/dev/null || echo "")"
-    if [ -n "$node_bin" ]; then
-        echo "$node_bin"
+    local candidate
+    local node_bin=""
+
+    if [ -n "${NODE_PATH:-}" ] && node_supports_server "${NODE_PATH}"; then
+        echo "${NODE_PATH}"
+        return
+    fi
+    if [ -n "${NVM_BIN:-}" ] && node_supports_server "${NVM_BIN}/node"; then
+        echo "${NVM_BIN}/node"
         return
     fi
     for candidate in \
         "$HOME/.nvm/versions/node/"*/bin/node \
         /opt/homebrew/bin/node \
-        /usr/local/bin/node; do
-        if [ -x "$candidate" ]; then
+        /usr/local/bin/node \
+        /usr/bin/node; do
+        if node_supports_server "$candidate"; then
             echo "$candidate"
             return
         fi
     done
+    node_bin="$(command -v node 2>/dev/null || echo "")"
+    if [ -n "$node_bin" ] && [ -x "$node_bin" ]; then
+        echo "$node_bin"
+        return
+    fi
     echo ""
 }
 
@@ -165,7 +185,8 @@ do_status() {
 
     # Count tmux agent sessions
     local agent_count
-    agent_count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -c '^crew-' || echo "0")
+    agent_count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -c '^crew-' || true)
+    agent_count="${agent_count:-0}"
     echo "[status] Active agents: $agent_count"
 
     if [ "$agent_count" -gt 0 ]; then

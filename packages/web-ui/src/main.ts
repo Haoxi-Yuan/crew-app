@@ -3,10 +3,15 @@ import {
   renderMessage, renderMessages, renderApprovalCard, removeApprovalCard,
   updateMessageStatus, setApprovalHandler, updateTypingIndicators,
   showTerminalPanel, hideTerminalPanel, updateTerminalContent,
+  setPeakHandlers, renderPeakCard, updatePeakDecision,
+  type PeakData,
 } from "./chat.js";
 import { initInput } from "./input.js";
 import { initQuickJump } from "./quick-jump.js";
-import { getAvatarColor, escapeHtml, contextBorderGradient } from "./utils.js";
+import { getAvatarColor, escapeHtml, contextBorderGradient, showConfirm } from "./utils.js";
+import { initDashboard, handleProjectWsEvent } from "./dashboard.js";
+import { getActiveProjectId, setActiveProject, onActiveProjectChange } from "./project-context.js";
+import type { Project } from "./project-types.js";
 
 let ws: WebSocket | null = null;
 let agents: Agent[] = [];
@@ -47,6 +52,49 @@ setApprovalHandler(async (agentName: string, key: string) => {
   }
 });
 
+// --- Peak Handlers ---
+setPeakHandlers({
+  onDecide: async (peakId: string, optionIndex: number) => {
+    try {
+      await fetch(`/api/peaks/${encodeURIComponent(peakId)}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ option_index: optionIndex, decided_by: "user" }),
+      });
+    } catch (err) {
+      console.error("Peak decide failed:", err);
+    }
+  },
+  onLetAgentDecide: async (peakId: string) => {
+    try {
+      await fetch(`/api/peaks/${encodeURIComponent(peakId)}/let-agent-decide`, {
+        method: "POST",
+      });
+    } catch (err) {
+      console.error("Peak let-agent-decide failed:", err);
+    }
+  },
+  onPause: async (peakId: string) => {
+    try {
+      await fetch(`/api/peaks/${encodeURIComponent(peakId)}/pause`, {
+        method: "POST",
+      });
+    } catch (err) {
+      console.error("Peak pause failed:", err);
+    }
+  },
+});
+
+// Load pending peaks on channel switch
+async function loadPendingPeaks(): Promise<void> {
+  try {
+    const peaks: PeakData[] = await (await fetch("/api/peaks/pending")).json();
+    for (const peak of peaks) {
+      renderPeakCard(peak);
+    }
+  } catch { /* ignore */ }
+}
+
 // --- Modal ---
 function openModal(title: string, bodyHtml: string): void {
   modalTitle.textContent = title;
@@ -68,7 +116,7 @@ contextMenu.addEventListener("click", async (e) => {
   } else if (action === "unarchive") {
     await fetch(`/api/channels/${ctxTargetChannelId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "active" }) });
   } else if (action === "delete") {
-    if (confirm("Delete this channel and all its messages?")) {
+    if (await showConfirm("Delete this channel and all its messages?")) {
       await fetch(`/api/channels/${ctxTargetChannelId}`, { method: "DELETE" });
       if (currentChannelId === ctxTargetChannelId) switchChannel("general");
     }
@@ -135,8 +183,12 @@ document.addEventListener("keydown", (e) => {
 
 // --- Channels ---
 async function loadChannels(): Promise<void> {
-  const url = showArchived ? "/api/channels" : "/api/channels?status=active";
-  channels = await (await fetch(url)).json();
+  const projectId = getActiveProjectId();
+  const params = new URLSearchParams();
+  if (!showArchived) params.set("status", "active");
+  if (projectId) params.set("project_id", projectId);
+  const qs = params.toString();
+  channels = await (await fetch(`/api/channels${qs ? "?" + qs : ""}`)).json();
   renderChannels();
 }
 
@@ -247,6 +299,7 @@ async function switchChannel(id: string): Promise<void> {
   const msgs: Message[] = await (await fetch(`/api/messages?channel_id=${id}&limit=50`)).json();
   renderMessages(msgs);
   loadPendingApprovals();
+  loadPendingPeaks();
 }
 
 async function fetchTerminalContent(agentName: string): Promise<void> {
@@ -301,7 +354,7 @@ function openGroupMemberModal(ch: Channel): void {
   document.querySelectorAll(".remove-member-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const name = (btn as HTMLElement).dataset.name!;
-      if (!confirm(`Remove ${name} from the group?`)) return;
+      if (!await showConfirm(`Remove ${name} from the group?`)) return;
       await fetch(`/api/channels/${ch.id}/members/${encodeURIComponent(name)}`, { method: "DELETE" });
       await loadChannels();
       const updated = channels.find(c => c.id === ch.id);
@@ -373,7 +426,9 @@ document.getElementById("show-archived")!.addEventListener("change", (e) => {
 
 // --- Agents ---
 async function loadAgents(): Promise<void> {
-  agents = await (await fetch("/api/agents")).json();
+  const projectId = getActiveProjectId();
+  const url = projectId ? `/api/agents?project_id=${encodeURIComponent(projectId)}` : "/api/agents";
+  agents = await (await fetch(url)).json();
   renderAgents();
 }
 
@@ -461,7 +516,7 @@ function openAgentEdit(ag: Agent): void {
     await loadAgents();
   });
   document.getElementById("f-ag-del")!.addEventListener("click", async () => {
-    if (!confirm(`Delete agent "${ag.name}"? This will stop its tmux session, kill bridge processes, and delete its workspace.`)) return;
+    if (!await showConfirm(`Delete agent "${ag.name}"? This will stop its tmux session, kill bridge processes, and delete its workspace.`)) return;
     try {
       const r = await fetch(`/api/agents/${encodedName}`, { method: "DELETE" });
       if (!r.ok) {
@@ -479,6 +534,11 @@ function openAgentEdit(ag: Agent): void {
 }
 
 document.getElementById("add-agent-btn")!.addEventListener("click", () => {
+  const activeProjectId = getActiveProjectId();
+  const projectOptions = sidebarProjects.map(p =>
+    `<option value="${esc(p.id)}"${p.id === activeProjectId ? " selected" : ""}>${esc(p.name)}</option>`
+  ).join("");
+
   openModal("Create Agent", `
     <div class="form-group"><label>Name</label><input id="f-ag-name" type="text" placeholder="agent-name"></div>
     <div class="form-group">
@@ -489,6 +549,13 @@ document.getElementById("add-agent-btn")!.addEventListener("click", () => {
       </select>
     </div>
     <div class="form-group"><label>Role</label><input id="f-ag-role2" type="text" placeholder="e.g. Backend developer"></div>
+    <div class="form-group">
+      <label>Assign to Project</label>
+      <select id="f-ag-project">
+        <option value="">None</option>
+        ${projectOptions}
+      </select>
+    </div>
     <label class="toggle-label" style="margin-bottom:10px"><input type="checkbox" id="f-ag-wake" checked> Start immediately after creation</label>
     <button class="modal-action-btn" id="f-ag-create">Create</button>
   `);
@@ -498,6 +565,7 @@ document.getElementById("add-agent-btn")!.addEventListener("click", () => {
     const provider = (document.getElementById("f-ag-provider") as HTMLSelectElement).value;
     const role = (document.getElementById("f-ag-role2") as HTMLInputElement).value.trim();
     const wake = (document.getElementById("f-ag-wake") as HTMLInputElement).checked;
+    const projectId = (document.getElementById("f-ag-project") as HTMLSelectElement).value;
     const btn = document.getElementById("f-ag-create") as HTMLButtonElement;
     btn.disabled = true;
     btn.textContent = "Creating...";
@@ -516,6 +584,16 @@ document.getElementById("add-agent-btn")!.addEventListener("click", () => {
       }
       if (data.wakeError) {
         alert(`Agent created but failed to start: ${data.wakeError}`);
+      }
+      // Assign to project if selected
+      if (projectId) {
+        try {
+          await fetch(`/api/projects/${projectId}/agents`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agent_name: name, role_in_project: role, assignment_type: "dedicated" }),
+          });
+        } catch { /* ignore assignment failure */ }
       }
     } catch (err) {
       alert("Failed: " + (err as Error).message);
@@ -544,7 +622,7 @@ async function wakeAgent(name: string): Promise<void> {
 }
 
 document.getElementById("wake-all-btn")!.addEventListener("click", async () => {
-  if (!confirm("Wake all agents? This will open Terminal tabs for each agent.")) return;
+  if (!await showConfirm("Wake all agents? This will open Terminal tabs for each agent.")) return;
   try {
     const r = await fetch("/api/wake-all", { method: "POST" });
     const data = await r.json();
@@ -570,25 +648,44 @@ async function loadPendingApprovals(): Promise<void> {
 
 // --- Shared Files ---
 async function loadFiles(): Promise<void> {
-  const files: SharedFile[] = await (await fetch("/api/shared-files")).json();
+  const projectId = getActiveProjectId();
+  const url = projectId ? `/api/shared-files?project_id=${encodeURIComponent(projectId)}` : "/api/shared-files";
+  const files: SharedFile[] = await (await fetch(url)).json();
   renderFiles(files);
 }
 
 function renderFiles(files: SharedFile[]): void {
   fileListEl.innerHTML = "";
+  if (files.length === 0) {
+    const projectId = getActiveProjectId();
+    const li = document.createElement("li");
+    li.className = "file-empty-state";
+    li.textContent = projectId
+      ? "No project assets yet. Derived files will appear in the workplace automatically."
+      : "No shared files yet.";
+    fileListEl.appendChild(li);
+    return;
+  }
   for (const f of files) {
     const li = document.createElement("li");
-    li.innerHTML = `<span class="file-item-name">${esc(f.path)}</span>`;
-    li.addEventListener("click", () => openFileEditor(f.path));
+    const scopeBadge = f.scope_type ? `<span class="file-scope-badge">${esc(f.scope_type)}${f.scope_name ? `:${esc(f.scope_name)}` : ""}</span>` : "";
+    li.innerHTML = `${scopeBadge}<span class="file-item-name">${esc(f.path)}</span>`;
+    li.addEventListener("click", () => openFileEditor(f));
     fileListEl.appendChild(li);
   }
 }
 
-async function openFileEditor(filePath: string): Promise<void> {
+async function openFileEditor(file: SharedFile): Promise<void> {
   try {
-    const data = await (await fetch(`/api/shared-files/${encodeURIComponent(filePath)}`)).json();
-    openModal(filePath, `
+    const params = new URLSearchParams();
+    if (file.scope_type) params.set("scope_type", file.scope_type);
+    if (file.scope_id) params.set("scope_id", file.scope_id);
+    if (file.project_id) params.set("project_id", file.project_id);
+    const qs = params.toString();
+    const data = await (await fetch(`/api/shared-files/${encodeURIComponent(file.path)}${qs ? `?${qs}` : ""}`)).json();
+    openModal(file.path, `
       <textarea id="f-file-content" class="file-editor">${esc(data.content)}</textarea>
+      <div class="file-meta-line">Scope: ${esc(data.scope_type || "global")}${data.scope_name ? ` / ${esc(data.scope_name)}` : ""}</div>
       <div style="display:flex;gap:8px;margin-top:8px;">
         <button class="modal-action-btn" id="f-file-save">Save</button>
         <button class="modal-action-btn danger" id="f-file-del">Delete</button>
@@ -596,13 +693,23 @@ async function openFileEditor(filePath: string): Promise<void> {
     `);
     document.getElementById("f-file-save")!.addEventListener("click", async () => {
       const content = (document.getElementById("f-file-content") as HTMLTextAreaElement).value;
-      await fetch(`/api/shared-files/${encodeURIComponent(filePath)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content, created_by: "user" }) });
+      await fetch(`/api/shared-files/${encodeURIComponent(file.path)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content,
+          created_by: "user",
+          project_id: file.project_id,
+          scope_type: file.scope_type,
+          scope_id: file.scope_id,
+        }),
+      });
       closeModal();
       await loadFiles();
     });
     document.getElementById("f-file-del")!.addEventListener("click", async () => {
-      if (!confirm(`Delete file "${filePath}"?`)) return;
-      await fetch(`/api/shared-files/${encodeURIComponent(filePath)}`, { method: "DELETE" });
+      if (!await showConfirm(`Delete file "${file.path}"?`)) return;
+      await fetch(`/api/shared-files/${encodeURIComponent(file.path)}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
       closeModal();
       await loadFiles();
     });
@@ -611,8 +718,18 @@ async function openFileEditor(filePath: string): Promise<void> {
 
 // New file
 document.getElementById("new-file-btn")!.addEventListener("click", () => {
+  const projectId = getActiveProjectId();
   openModal("New Shared File", `
     <div class="form-group"><label>Filename</label><input id="f-newfile-name" type="text" placeholder="e.g. notes.md"></div>
+    ${projectId ? `
+      <div class="form-group">
+        <label>Store In</label>
+        <select id="f-newfile-kind">
+          <option value="derived">Workplace (default)</option>
+          <option value="canonical">Project root</option>
+        </select>
+      </div>
+    ` : ""}
     <textarea id="f-newfile-content" class="file-editor" placeholder="File content..."></textarea>
     <button class="modal-action-btn" id="f-newfile-save" style="margin-top:8px;">Create</button>
   `);
@@ -620,7 +737,12 @@ document.getElementById("new-file-btn")!.addEventListener("click", () => {
     const name = (document.getElementById("f-newfile-name") as HTMLInputElement).value.trim();
     if (!name) return;
     const content = (document.getElementById("f-newfile-content") as HTMLTextAreaElement).value;
-    await fetch(`/api/shared-files/${encodeURIComponent(name)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content, created_by: "user" }) });
+    const artifactKind = projectId ? (document.getElementById("f-newfile-kind") as HTMLSelectElement).value : undefined;
+    await fetch(`/api/shared-files/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, created_by: "user", project_id: projectId, artifact_kind: artifactKind }),
+    });
     closeModal();
     await loadFiles();
   });
@@ -633,7 +755,17 @@ fileUploadInput.addEventListener("change", async () => {
   const file = fileUploadInput.files?.[0];
   if (!file) return;
   const content = await file.text();
-  await fetch(`/api/shared-files/${encodeURIComponent(file.name)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content, created_by: "user", description: `Uploaded: ${file.name}` }) });
+  await fetch(`/api/shared-files/${encodeURIComponent(file.name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      content,
+      created_by: "user",
+      description: `Uploaded: ${file.name}`,
+      project_id: getActiveProjectId(),
+      artifact_kind: getActiveProjectId() ? "derived" : undefined,
+    }),
+  });
   fileUploadInput.value = "";
   await loadFiles();
 });
@@ -801,8 +933,28 @@ function handleWsEvent(event: WsEvent): void {
     case "channel:deleted":
       loadChannels();
       break;
+    case "peak:pending": {
+      const peak = event.data as PeakData;
+      renderPeakCard(peak);
+      break;
+    }
+    case "peak:decided": {
+      const data = event.data as { peak_id: string; chosen_option: { label: string }; decided_by: string };
+      updatePeakDecision(data.peak_id, data.chosen_option?.label || "unknown", data.decided_by || "system");
+      break;
+    }
+    case "peak:paused":
+      // Timer will be refreshed on next poll; no immediate UI change needed
+      break;
     case "file:updated":
       loadFiles();
+      break;
+    case "project:created":
+    case "project:updated":
+    case "project:deleted":
+    case "project:agent_changed":
+      handleProjectWsEvent(event.type, event.data);
+      loadSidebarProjects();
       break;
   }
 }
@@ -825,8 +977,91 @@ initQuickJump(
   },
 );
 
+// --- Project Selector ---
+const projectSelectorEl = document.getElementById("project-selector") as HTMLSelectElement;
+let sidebarProjects: Project[] = [];
+
+async function loadSidebarProjects(): Promise<void> {
+  try {
+    sidebarProjects = await (await fetch("/api/projects?status=active")).json();
+    renderProjectSelector();
+  } catch { /* ignore */ }
+}
+
+function renderProjectSelector(): void {
+  const currentVal = projectSelectorEl.value;
+  projectSelectorEl.innerHTML = `<option value="">All Projects</option>`;
+  for (const p of sidebarProjects) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    projectSelectorEl.appendChild(opt);
+  }
+  // Restore selection if still valid
+  const activeId = getActiveProjectId();
+  if (activeId && sidebarProjects.find(p => p.id === activeId)) {
+    projectSelectorEl.value = activeId;
+  } else if (currentVal && sidebarProjects.find(p => p.id === currentVal)) {
+    projectSelectorEl.value = currentVal;
+  } else {
+    projectSelectorEl.value = "";
+  }
+}
+
+projectSelectorEl.addEventListener("change", () => {
+  const selectedId = projectSelectorEl.value;
+  const project = selectedId ? sidebarProjects.find(p => p.id === selectedId) || null : null;
+  setActiveProject(project);
+});
+
+// When active project changes (from selector or from dashboard), refresh sidebar
+onActiveProjectChange((project) => {
+  // Sync selector dropdown
+  projectSelectorEl.value = project?.id || "";
+  // Reload sidebar data filtered by project
+  loadChannels();
+  loadAgents();
+  loadFiles();
+  // Auto-switch to project channel if available
+  if (project) {
+    const projectChannelId = `project-${project.slug}`;
+    // Wait for channels to load, then switch
+    setTimeout(() => {
+      const ch = channels.find(c => c.id === projectChannelId);
+      if (ch) {
+        switchChannel(projectChannelId);
+        switchView("chat");
+      }
+    }, 300);
+  }
+});
+
+// --- View Switching ---
+type ViewType = "chat" | "dashboard";
+let currentView: ViewType = "chat";
+
+function switchView(view: ViewType): void {
+  currentView = view;
+  const chatArea = document.getElementById("chat-area")!;
+  const dashArea = document.getElementById("dashboard-area")!;
+  chatArea.style.display = view === "chat" ? "" : "none";
+  dashArea.style.display = view === "dashboard" ? "flex" : "none";
+  document.querySelectorAll(".view-tab").forEach((el) => {
+    el.classList.toggle("active", (el as HTMLElement).dataset.view === view);
+  });
+}
+
+document.querySelectorAll(".view-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const view = (tab as HTMLElement).dataset.view as ViewType;
+    if (view) switchView(view);
+  });
+});
+
 // --- Init ---
 initInput(sendMessage, () => agents);
+initDashboard();
+loadSidebarProjects();
 loadChannels();
 loadAgents();
 loadFiles();

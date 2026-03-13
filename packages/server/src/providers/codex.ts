@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import WebSocket from "ws";
+import { buildAgentWorkspaceEnv } from "../agent-context.js";
 import { PROJECT_ROOT } from "../config.js";
 import { broadcast } from "../ws/handler.js";
 import { getDb } from "../db/index.js";
@@ -547,7 +548,11 @@ export async function startCodexAgent(agentName: string): Promise<void> {
 
   const proc = spawn(codexPath, args, {
     cwd: agentDir,
-    env: { ...process.env, CREW_SERVER_URL: process.env.CREW_SERVER_URL || "http://127.0.0.1:3140" },
+    env: {
+      ...process.env,
+      ...buildAgentWorkspaceEnv(agentName),
+      CREW_SERVER_URL: process.env.CREW_SERVER_URL || "http://127.0.0.1:3140",
+    },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -665,7 +670,7 @@ export async function sendMessageToCodexAgent(
     } else if (channelType === "group") {
       inputText = `[${senderName} in group "${channelId}"]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`;
     } else {
-      inputText = `[${senderName} in group chat]: ${content}`;
+      inputText = `[${senderName} in #${channelId}]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`;
     }
 
     const userInput = [{ type: "text", text: inputText, text_elements: [] }];

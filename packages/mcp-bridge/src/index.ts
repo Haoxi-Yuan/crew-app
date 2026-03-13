@@ -17,6 +17,17 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
+async function getAgentProjectScope(): Promise<{ projectId?: string; workplaceId?: string }> {
+  const assignment = await client.getAgentCurrentProject(agentName);
+  if (!assignment) return {};
+  const workplaces = await client.listProjectWorkplaces(assignment.project_id);
+  const defaultWorkplace = workplaces.find((w) => w.slug === "default") || workplaces[0];
+  return {
+    projectId: assignment.project_id,
+    workplaceId: defaultWorkplace?.id,
+  };
+}
+
 // Tool: check_mentions
 server.tool(
   "check_mentions",
@@ -152,7 +163,7 @@ server.tool(
   { path: z.string().describe("File path relative to shared directory") },
   async ({ path }) => {
     try {
-      const files = await client.listSharedFiles();
+      const files = await client.listSharedFiles(await getAgentProjectScope());
       const file = files.find((f) => f.path === path);
       if (!file) {
         return { content: [{ type: "text", text: `File not found: ${path}` }] };
@@ -161,7 +172,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `${file.path} | ${file.size_bytes} bytes | by ${file.created_by} | updated ${new Date(file.updated_at).toLocaleString()}${file.description ? ` | ${file.description}` : ""}`,
+            text: `${file.path} | ${file.size_bytes} bytes | ${file.scope_type || "global"}${file.scope_name ? `:${file.scope_name}` : ""} | by ${file.created_by} | updated ${new Date(file.updated_at).toLocaleString()}${file.description ? ` | ${file.description}` : ""}`,
           },
         ],
       };
@@ -181,12 +192,12 @@ server.tool(
   { path: z.string().describe("File path relative to shared directory") },
   async ({ path }) => {
     try {
-      const file = await client.readSharedFile(path);
+      const file = await client.readSharedFile(path, await getAgentProjectScope());
       return {
         content: [
           {
             type: "text",
-            text: `File: ${file.path}\nAuthor: ${file.created_by}\nUpdated: ${new Date(file.updated_at).toLocaleString()}\n\n${file.content}`,
+            text: `File: ${file.path}\nScope: ${file.scope_type || "global"}${file.scope_id ? ` (${file.scope_id})` : ""}\nAuthor: ${file.created_by}\nUpdated: ${new Date(file.updated_at).toLocaleString()}\n\n${file.content}`,
           },
         ],
       };
@@ -207,12 +218,17 @@ server.tool(
     path: z.string().describe("File path relative to shared directory"),
     content: z.string().describe("File content to write"),
     description: z.string().optional().describe("Brief description of the file"),
+    artifact_kind: z.enum(["canonical", "derived"]).optional().describe("Canonical assets stay in the project root; derived artifacts go to the workplace"),
   },
-  async ({ path, content, description }) => {
+  async ({ path, content, description, artifact_kind }) => {
     try {
-      await client.writeSharedFile(agentName, path, content, description);
+      const scope = await getAgentProjectScope();
+      await client.writeSharedFile(agentName, path, content, description, {
+        ...scope,
+        artifactKind: artifact_kind,
+      });
       return {
-        content: [{ type: "text", text: `File written: ${path}` }],
+        content: [{ type: "text", text: `File written: ${path}${artifact_kind ? ` [${artifact_kind}]` : ""}` }],
       };
     } catch (err) {
       return {
@@ -230,14 +246,14 @@ server.tool(
   {},
   async () => {
     try {
-      const files = await client.listSharedFiles();
+      const files = await client.listSharedFiles(await getAgentProjectScope());
       if (files.length === 0) {
         return { content: [{ type: "text", text: "No shared files yet." }] };
       }
       const text = files
         .map(
           (f) =>
-            `- ${f.path} (${f.size_bytes} bytes, by ${f.created_by})${f.description ? `: ${f.description}` : ""}`
+            `- [${f.scope_type || "global"}${f.scope_name ? `:${f.scope_name}` : ""}] ${f.path} (${f.size_bytes} bytes, by ${f.created_by})${f.description ? `: ${f.description}` : ""}`
         )
         .join("\n");
       return { content: [{ type: "text", text }] };
@@ -451,6 +467,34 @@ server.tool(
   }
 );
 
+// Tool: get_project_context
+server.tool(
+  "get_project_context",
+  "Get your current project context including description, tech stack, standards, and team. Use this to refresh project context mid-session or after switching projects. If no project_id given, auto-detects from your assignment.",
+  {
+    project_id: z.string().optional().describe("Project ID (auto-detected if omitted)"),
+  },
+  async ({ project_id }) => {
+    try {
+      let pid = project_id;
+      if (!pid) {
+        const assignment = await client.getAgentCurrentProject(agentName);
+        if (!assignment) {
+          return { content: [{ type: "text", text: "You are not assigned to any active project." }] };
+        }
+        pid = assignment.project_id;
+      }
+      const result = await client.getProjectContext(pid);
+      return { content: [{ type: "text", text: result.context }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // Tool: memory_search
 server.tool(
   "memory_search",
@@ -460,10 +504,11 @@ server.tool(
     category: z.string().optional().describe("Filter: contact, preference, decision, project, pattern, feedback, daily"),
     include_weak: z.boolean().optional().describe("Include low-strength (nearly forgotten) memories"),
     limit: z.number().optional().describe("Max results (default 5, max 20)"),
+    project_id: z.string().optional().describe("Scope search to a specific project. Omit to search global (non-project) memories."),
   },
-  async ({ query, category, include_weak, limit }) => {
+  async ({ query, category, include_weak, limit, project_id }) => {
     try {
-      const result = await client.memorySearch(query, agentName, category, include_weak, limit, true);
+      const result = await client.memorySearch(query, agentName, category, include_weak, limit, true, project_id);
       if (result.count === 0) {
         return { content: [{ type: "text", text: "No matching memories found." }] };
       }
@@ -517,10 +562,11 @@ server.tool(
     content: z.string().describe("Full memory content"),
     importance: z.number().optional().describe("Importance 1-5 (default 3). 5=critical, 1=trivial"),
     emotional_weight: z.number().optional().describe("1.0-2.0 (default 1.0). Set >1.5 for user-emphasized items"),
+    project_id: z.string().optional().describe("Associate memory with a specific project. Omit for global memories."),
   },
-  async ({ category, heading, content, importance, emotional_weight }) => {
+  async ({ category, heading, content, importance, emotional_weight, project_id }) => {
     try {
-      const result = await client.memoryWrite(agentName, category, heading, content, importance, emotional_weight);
+      const result = await client.memoryWrite(agentName, category, heading, content, importance, emotional_weight, project_id);
       return {
         content: [{ type: "text", text: `Memory saved (id: ${result.id}, status: ${result.status}, strength: ${Math.round(result.retrievability * 100)}%)` }],
       };
@@ -541,10 +587,12 @@ server.tool(
 server.tool(
   "memory_status",
   "View memory health: total count, category breakdown, average strength, recently accessed entries.",
-  {},
-  async () => {
+  {
+    project_id: z.string().optional().describe("Scope stats to a specific project. Omit for global memories."),
+  },
+  async ({ project_id }) => {
     try {
-      const stats = await client.memoryStats(agentName);
+      const stats = await client.memoryStats(agentName, project_id);
       const lines = [
         `Total memories: ${stats.total}`,
         `By status: ${Object.entries(stats.by_status).map(([k, v]) => `${k}=${v}`).join(", ") || "none"}`,
@@ -558,6 +606,162 @@ server.tool(
         }
       }
       return { content: [{ type: "text", text: lines.join("\n") }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: reflect_on_task
+server.tool(
+  "reflect_on_task",
+  "Submit a structured reflection after completing a task. Includes lessons learned and optional proposals for standard updates. High-confidence additive proposals may be auto-applied.",
+  {
+    project_id: z.string().describe("Project ID this reflection belongs to"),
+    trigger_type: z.enum(["task_complete", "project_milestone", "manual", "session_cycle"]).describe("What triggered this reflection"),
+    task_summary: z.string().describe("Brief summary of the task completed"),
+    lessons_learned: z.array(z.object({
+      category: z.enum(["process", "quality", "communication", "tooling", "domain"]),
+      description: z.string(),
+      evidence: z.string(),
+    })).optional().describe("Lessons from this task"),
+    proposed_updates: z.array(z.object({
+      action: z.enum(["add", "modify", "remove"]),
+      section: z.string().describe("Standard name/section"),
+      current_text: z.string().optional().describe("Current standard text (for modify/remove)"),
+      proposed_text: z.string().describe("Proposed new text"),
+      rationale: z.string().describe("Why this change is beneficial"),
+      confidence: z.number().describe("0-1 confidence in this proposal"),
+    })).optional().describe("Proposed updates to shared standards"),
+    confidence: z.number().optional().describe("Overall reflection confidence (0-1, default 0.5)"),
+  },
+  async ({ project_id, trigger_type, task_summary, lessons_learned, proposed_updates, confidence }) => {
+    try {
+      const result = await client.submitReflection(
+        agentName, project_id, trigger_type, task_summary,
+        lessons_learned || [], proposed_updates || [], confidence || 0.5
+      );
+      const autoSummary = result.auto_results.length > 0
+        ? "\n" + result.auto_results.map((r) => `  [${r.index}] ${r.action}: ${r.reason}`).join("\n")
+        : "";
+      return {
+        content: [{
+          type: "text",
+          text: `Reflection submitted (id: ${result.id}, status: ${result.status})${autoSummary}`,
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: propose_standard_update
+server.tool(
+  "propose_standard_update",
+  "Propose a single update to shared coding standards. Use this when you notice a pattern worth standardizing. Auto-applied if confidence >= 0.8, additive, no contradiction, within budget, and >= 2 agents agree.",
+  {
+    project_id: z.string().describe("Project ID for context"),
+    action: z.enum(["add", "modify", "remove"]).describe("Type of update"),
+    section: z.string().describe("Standard name/section to update"),
+    current_text: z.string().optional().describe("Current text (for modify/remove)"),
+    proposed_text: z.string().describe("Proposed text for the standard"),
+    rationale: z.string().describe("Why this standard should be adopted"),
+    confidence: z.number().describe("0-1 confidence level"),
+  },
+  async ({ project_id, action, section, current_text, proposed_text, rationale, confidence }) => {
+    try {
+      const result = await client.proposeStandardUpdate(agentName, project_id, {
+        action, section, current_text, proposed_text, rationale, confidence,
+      });
+      const autoResult = result.auto_results[0];
+      const outcome = autoResult ? `${autoResult.action}: ${autoResult.reason}` : "submitted for review";
+      return {
+        content: [{
+          type: "text",
+          text: `Standard update proposed (id: ${result.id}, status: ${result.status})\nOutcome: ${outcome}`,
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: escalate_peak
+server.tool(
+  "escalate_peak",
+  "Escalate a decision to the human operator (Peak). Use when you face: irreversible actions, multiple viable paths, information asymmetry, or need a drift check. The human will decide, and the decision is persisted to team memory. If the human doesn't respond in time, your default_option is auto-chosen.",
+  {
+    peak_type: z.enum(["irreversibility", "multiple_paths", "info_asymmetry", "drift_check"]).describe("Type of peak"),
+    context: z.string().describe("Clear description of the situation requiring human judgment"),
+    options: z.array(z.object({
+      label: z.string().describe("Short name for the option"),
+      pros: z.string().describe("Advantages of this option"),
+      cons: z.string().describe("Disadvantages of this option"),
+    })).describe("At least 2 options (except drift_check which can have 0)"),
+    agent_lean: z.string().optional().describe("Which option you'd recommend and why"),
+    default_option: z.number().optional().describe("Index of option to auto-choose on timeout (default 0)"),
+    timeout_seconds: z.number().optional().describe("Seconds to wait for human (30-1800, default 300)"),
+    project_id: z.string().optional().describe("Project ID for context"),
+  },
+  async ({ peak_type, context, options, agent_lean, default_option, timeout_seconds, project_id }) => {
+    try {
+      const result = await client.escalatePeak(
+        agentName, project_id, peak_type, context, options,
+        agent_lean, default_option, timeout_seconds
+      );
+      const expiresIn = Math.round((result.expires_at - Date.now()) / 1000);
+      return {
+        content: [{
+          type: "text",
+          text: `Peak escalated (id: ${result.id}, type: ${peak_type})\nStatus: ${result.status}\nExpires in: ${expiresIn}s\nDefault option: ${default_option ?? 0}\n\nUse check_peak_decision("${result.id}") to poll for the human's decision.`,
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: check_peak_decision
+server.tool(
+  "check_peak_decision",
+  "Check if a human has decided on a peak you escalated. Returns the decision details if resolved, or 'pending' if still waiting.",
+  {
+    peak_id: z.string().describe("The peak ID returned from escalate_peak"),
+  },
+  async ({ peak_id }) => {
+    try {
+      const result = await client.checkPeakDecision(peak_id);
+      if (result.status === "pending") {
+        return {
+          content: [{
+            type: "text",
+            text: `Peak ${peak_id} is still pending. The human has not decided yet. You can continue other work and check back later.`,
+          }],
+        };
+      }
+      const chosen = result.options[result.decision_index ?? 0];
+      const chosenLabel = chosen ? chosen.label : "unknown";
+      return {
+        content: [{
+          type: "text",
+          text: `Peak ${peak_id} resolved!\nStatus: ${result.status}\nDecision: option ${result.decision_index} - "${chosenLabel}"\nDecided by: ${result.decided_by || "unknown"}\n${result.decision_note ? `Note: ${result.decision_note}` : ""}\n\nProceed with the chosen option.`,
+        }],
+      };
     } catch (err) {
       return {
         content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
