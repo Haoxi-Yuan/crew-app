@@ -54,12 +54,14 @@ setApprovalHandler(async (agentName: string, key: string) => {
 
 // --- Peak Handlers ---
 setPeakHandlers({
-  onDecide: async (peakId: string, optionIndex: number) => {
+  onDecide: async (peakId: string, optionIndex: number, note?: string) => {
     try {
+      const body: Record<string, unknown> = { option_index: optionIndex, decided_by: "user" };
+      if (note) body.note = note;
       await fetch(`/api/peaks/${encodeURIComponent(peakId)}/decide`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ option_index: optionIndex, decided_by: "user" }),
+        body: JSON.stringify(body),
       });
     } catch (err) {
       console.error("Peak decide failed:", err);

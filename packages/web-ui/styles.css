@@ -447,6 +447,11 @@ html, body { height: 100%; font-family: var(--font-sans); background: var(--bg-p
 .peak-choose-btn { padding: 5px 14px; border: 1px solid #7c3aed; border-radius: 6px; background: transparent; color: #6d28d9; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; flex-shrink: 0; font-family: inherit; }
 .peak-choose-btn:hover { background: #7c3aed; color: #f4f1e6; }
 .peak-choose-btn:disabled { opacity: 0.4; cursor: default; }
+.peak-note { margin-bottom: 10px; }
+.peak-note-input { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 13px; font-family: inherit; resize: vertical; line-height: 1.4; box-sizing: border-box; }
+.peak-note-input:focus { outline: none; border-color: #7c3aed; }
+.peak-note-input::placeholder { color: var(--text-secondary); }
+.peak-resolved .peak-note { display: none; }
 .peak-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .peak-btn { padding: 6px 16px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: inherit; }
 .peak-btn:active { transform: scale(0.96); }

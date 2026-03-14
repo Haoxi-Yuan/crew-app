@@ -53,7 +53,7 @@ router.post("/", (req: Request, res: Response) => {
 
   // Create pending mentions for delivery tracking
   if (allTargets.length > 0) {
-    createPendingMentions(messageId, allTargets);
+    createPendingMentions(messageId, allTargets, cid);
   }
 
   const message = {

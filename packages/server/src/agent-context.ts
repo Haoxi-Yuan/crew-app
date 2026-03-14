@@ -14,6 +14,7 @@ export interface AgentWorkspaceContext {
   currentWorkplaceLink: string;
   project: Pick<ProjectRow, "id" | "name" | "slug" | "directory"> | null;
   workplace: Pick<WorkplaceRow, "id" | "name" | "slug" | "directory" | "kind"> | null;
+  projectAgents: { name: string; role_in_project: string; assignment_type: string }[];
 }
 
 function removePathIfPresent(targetPath: string): void {
@@ -41,7 +42,7 @@ function buildPointerReadme(): string {
     "",
     "- `current-project/` -> canonical project assets",
     "- `current-workplace/` -> derived artifacts and active execution outputs",
-    "- `context.json` -> machine-readable metadata for the current assignment",
+    "- `context.json` -> machine-readable metadata for the current assignment, including current project agents",
     "",
   ].join("\n");
 }
@@ -83,6 +84,19 @@ export function getAgentWorkspaceContext(agentName: string): AgentWorkspaceConte
     workplace_kind: string | null;
   } | undefined;
 
+  const projectAgents = assignment
+    ? db.prepare(`
+      SELECT agent_name, role_in_project, assignment_type
+      FROM project_agents
+      WHERE project_id = ? AND status = 'active'
+      ORDER BY assigned_at ASC
+    `).all(assignment.project_id) as {
+      agent_name: string;
+      role_in_project: string;
+      assignment_type: string;
+    }[]
+    : [];
+
   return {
     agentName,
     agentDir,
@@ -103,6 +117,11 @@ export function getAgentWorkspaceContext(agentName: string): AgentWorkspaceConte
       directory: assignment.workplace_directory || "",
       kind: assignment.workplace_kind || "derived",
     } : null,
+    projectAgents: projectAgents.map((row) => ({
+      name: row.agent_name,
+      role_in_project: row.role_in_project,
+      assignment_type: row.assignment_type,
+    })),
   };
 }
 
@@ -120,6 +139,7 @@ export function syncAgentWorkspaceContext(agentName: string): AgentWorkspaceCont
     agent_dir: context.agentDir,
     project: context.project,
     workplace: context.workplace,
+    project_agents: context.projectAgents,
     pointers: {
       current_project: context.project ? context.currentProjectLink : null,
       current_workplace: context.workplace ? context.currentWorkplaceLink : null,
@@ -144,6 +164,7 @@ export function buildAgentWorkspaceEnv(agentName: string): Record<string, string
   if (context.project) {
     env.CLAUDE_CREW_PROJECT_ID = context.project.id;
     env.CLAUDE_CREW_PROJECT_DIR = context.project.directory;
+    env.CLAUDE_CREW_PROJECT_AGENTS = context.projectAgents.map((agent) => agent.name).join(",");
   }
   if (context.workplace) {
     env.CLAUDE_CREW_WORKPLACE_ID = context.workplace.id;

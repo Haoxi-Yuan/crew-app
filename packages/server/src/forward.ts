@@ -1,14 +1,34 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import fs from "node:fs";
+import path from "node:path";
 import { getDb, type MessageRow } from "./db/index.js";
 import { broadcast } from "./ws/handler.js";
 import { getProvider } from "./agent-runtime.js";
 import { sendMessageToCodexAgent } from "./providers/codex.js";
+import { PROJECT_ROOT } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
 const CONTEXT_MAX_MESSAGES = 15;
 const CONTEXT_MAX_CHARS = 3000;
+
+function writeClaudeForwardEnvelope(
+  agentName: string,
+  input: string,
+  messageId?: number,
+): string {
+  const inboxDir = path.join(PROJECT_ROOT, "agents", agentName, ".crew", "inbox");
+  fs.mkdirSync(inboxDir, { recursive: true });
+  const suffix = messageId ? `msg-${messageId}` : `ts-${Date.now()}`;
+  const filePath = path.join(inboxDir, `forward-${suffix}.txt`);
+  fs.writeFileSync(filePath, input, "utf-8");
+  return filePath;
+}
+
+function buildClaudeInboxPrompt(filePath: string): string {
+  return `A new forwarded chat message is waiting in ${filePath}. Read that file now, follow its reply instructions exactly, respond via send_to_chat, then continue with check_mentions for any remaining queue.`;
+}
 
 function describeChannel(channelId?: string, channelType?: string): string {
   if (!channelId) return "chat";
@@ -118,15 +138,15 @@ export async function forwardToAgent(
   }
 
   try {
-    // Send the text to the tmux session
-    // Send the full text literally, then submit it as a single prompt.
+    const envelopePath = writeClaudeForwardEnvelope(agentName, input, messageId);
+    const prompt = buildClaudeInboxPrompt(envelopePath);
     await execFileAsync("tmux", [
       "send-keys",
       "-t",
       sessionName,
       "-l",
       "--",
-      input,
+      prompt,
     ]);
     await execFileAsync("tmux", ["send-keys", "-t", sessionName, "Enter"]);
     return true;

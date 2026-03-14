@@ -139,7 +139,7 @@ function queueSettlementMessage(
   );
 
   const messageId = Number(result.lastInsertRowid);
-  createPendingMentions(messageId, [row.agent_name]);
+  createPendingMentions(messageId, [row.agent_name], channel.id);
   broadcast({
     type: "message:new",
     data: {

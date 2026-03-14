@@ -1,0 +1,10 @@
+{
+  "agent_name": "code-reviewer",
+  "agent_dir": "/Users/yuan/Projects/claude-crew/agents/code-reviewer",
+  "project": null,
+  "workplace": null,
+  "pointers": {
+    "current_project": null,
+    "current_workplace": null
+  }
+}

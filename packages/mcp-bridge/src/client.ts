@@ -158,8 +158,11 @@ export async function sendMessage(
   })) as { id: number; mentions: string[] };
 }
 
-export async function listAgents(): Promise<AgentInfo[]> {
-  return (await request("/agents")) as AgentInfo[];
+export async function listAgents(projectId?: string): Promise<AgentInfo[]> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("project_id", projectId);
+  const qs = params.toString();
+  return (await request(`/agents${qs ? `?${qs}` : ""}`)) as AgentInfo[];
 }
 
 export async function readSharedFile(
@@ -261,6 +264,42 @@ export async function setAgentConfig(
       restart,
     }),
   })) as { ok: boolean; name: string; provider?: string; model?: string; effort?: string; approvalPolicy?: string; sandboxMode?: string; restarted: boolean };
+}
+
+export async function createAgent(
+  callerName: string,
+  name: string,
+  role: string,
+  instructions?: string,
+  wake?: boolean,
+  permissions?: string[]
+): Promise<{ ok: boolean; id: string; name: string; workspace: string; woke?: boolean; wakeError?: string }> {
+  return (await request("/agents/create", {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      role,
+      instructions,
+      requested_by: callerName,
+      wake: wake ?? true,
+      provider: "claude",
+      permissions,
+    }),
+  })) as { ok: boolean; id: string; name: string; workspace: string; woke?: boolean; wakeError?: string };
+}
+
+export async function updateAgentInstructions(
+  callerName: string,
+  targetAgent: string,
+  instructions: string
+): Promise<{ ok: boolean; name: string }> {
+  return (await request(`/agents/${encodeURIComponent(targetAgent)}/instructions`, {
+    method: "PUT",
+    body: JSON.stringify({
+      instructions,
+      requested_by: callerName,
+    }),
+  })) as { ok: boolean; name: string };
 }
 
 export async function restartAgent(callerName: string, targetAgent: string): Promise<{ ok: boolean }> {
@@ -446,6 +485,22 @@ export async function getAgentCurrentProject(agentName: string): Promise<{ proje
   } catch {
     return null;
   }
+}
+
+export async function assignAgentToProject(
+  projectId: string,
+  agentName: string,
+  roleInProject?: string,
+  assignmentType?: "dedicated" | "shared"
+): Promise<{ ok: boolean; agent_name: string; assignment_type: string }> {
+  return (await request(`/projects/${encodeURIComponent(projectId)}/agents`, {
+    method: "POST",
+    body: JSON.stringify({
+      agent_name: agentName,
+      role_in_project: roleInProject,
+      assignment_type: assignmentType,
+    }),
+  })) as { ok: boolean; agent_name: string; assignment_type: string };
 }
 
 // --- Reflections ---

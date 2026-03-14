@@ -5,6 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { syncAgentWorkspaceContext } from "../agent-context.js";
 import { getDb, type ProjectRow, type ProjectAgentRow, type WorkplaceRow } from "../db/index.js";
+import { forwardToMentionedAgents } from "../forward.js";
+import { createPendingMentions } from "../mentions.js";
 import { ensureDefaultWorkplace, listWorkplacesForProject } from "../storage-scope.js";
 import { initProjectDirectory } from "../project-init.js";
 import { broadcast } from "../ws/handler.js";
@@ -33,6 +35,69 @@ function countProjectMemories(projectId: string): number {
       )
   `).get(projectId, projectId) as { count: number };
   return row.count;
+}
+
+function listActiveProjectAgents(projectId: string): { agent_name: string; role_in_project: string; assignment_type: string }[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT agent_name, role_in_project, assignment_type
+    FROM project_agents
+    WHERE project_id = ? AND status = 'active'
+    ORDER BY assigned_at ASC
+  `).all(projectId) as { agent_name: string; role_in_project: string; assignment_type: string }[];
+}
+
+function syncProjectAgentContexts(projectId: string): void {
+  for (const agent of listActiveProjectAgents(projectId)) {
+    syncAgentWorkspaceContext(agent.agent_name);
+  }
+}
+
+function announceProjectAgentUpdate(projectId: string, action: "assigned" | "removed", subjectAgent: string): void {
+  const db = getDb();
+  const project = db.prepare("SELECT name FROM projects WHERE id = ?").get(projectId) as { name: string } | undefined;
+  const channel = db.prepare(
+    "SELECT id, type FROM channels WHERE project_id = ? AND workplace_id IS NULL ORDER BY created_at ASC LIMIT 1"
+  ).get(projectId) as { id: string; type: string } | undefined;
+  if (!project || !channel) return;
+
+  const activeAgents = listActiveProjectAgents(projectId);
+  const mentionTargets = activeAgents.map((agent) => agent.agent_name);
+  const roster = activeAgents.length > 0
+    ? activeAgents.map((agent) => `${agent.agent_name}${agent.role_in_project ? ` (${agent.role_in_project})` : ""}`).join(", ")
+    : "(none)";
+  const verb = action === "assigned" ? "added to" : "removed from";
+  const now = Date.now();
+  const content = [
+    `Project team update for ${project.name}: ${subjectAgent} was ${verb} the project.`,
+    `Current project agents: ${roster}`,
+    "Only agents listed in the current project roster should be used for project delegation.",
+    "If you cached an older team composition, refresh it now.",
+  ].join("\n");
+
+  const result = db.prepare(`
+    INSERT INTO messages (channel_id, sender_type, sender_name, content, mentions, message_type, created_at)
+    VALUES (?, 'system', 'project-system', ?, ?, 'project_team_update', ?)
+  `).run(channel.id, content, JSON.stringify(mentionTargets), now);
+
+  const messageId = Number(result.lastInsertRowid);
+  createPendingMentions(messageId, mentionTargets, channel.id);
+  broadcast({
+    type: "message:new",
+    data: {
+      id: messageId,
+      channel_id: channel.id,
+      sender_type: "system",
+      sender_name: "project-system",
+      content,
+      mentions: mentionTargets,
+      message_type: "project_team_update",
+      created_at: now,
+    },
+  });
+  if (mentionTargets.length > 0) {
+    forwardToMentionedAgents(mentionTargets, "project-system", content, messageId, channel.id, channel.type).catch(() => {});
+  }
 }
 
 function createWorkplace(project: ProjectRow, name: string, kind = "derived"): WorkplaceRow {
@@ -448,7 +513,9 @@ router.post("/:id/agents", (req: Request, res: Response) => {
   `).run(projectId, agent_name, role_in_project || "", assignment_type || "dedicated", defaultWorkplace.id, now);
 
   db.prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(now, projectId);
-  syncAgentWorkspaceContext(agent_name);
+  initProjectDirectory(projectId);
+  syncProjectAgentContexts(projectId);
+  announceProjectAgentUpdate(projectId, "assigned", agent_name);
 
   broadcast({ type: "project:agent_changed", data: { project_id: projectId, agent_name, action: "assigned" } });
   res.json({ ok: true, agent_name, assignment_type: assignment_type || "dedicated" });
@@ -470,7 +537,10 @@ router.delete("/:id/agents/:name", (req: Request, res: Response) => {
 
   const now = Date.now();
   db.prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(now, projectId);
+  initProjectDirectory(projectId);
   syncAgentWorkspaceContext(agentName);
+  syncProjectAgentContexts(projectId);
+  announceProjectAgentUpdate(projectId, "removed", agentName);
 
   broadcast({ type: "project:agent_changed", data: { project_id: projectId, agent_name: agentName, action: "removed" } });
   res.json({ ok: true });
@@ -552,6 +622,7 @@ router.get("/:id/context", (req: Request, res: Response) => {
   }
   if (agents.length > 0) {
     context += `### Team: ${agents.map((a) => `${a.agent_name}${a.role_in_project ? ` (${a.role_in_project})` : ""}`).join(", ")}\n`;
+    context += "Only collaborate with agents listed in this team for project work. If the roster changes, refresh this context before delegating.\n";
   }
 
   // Enforce size budget (~3000 tokens ~ 12000 chars)

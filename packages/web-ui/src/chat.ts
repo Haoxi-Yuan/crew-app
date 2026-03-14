@@ -254,12 +254,12 @@ export interface PeakData {
   expires_at: number;
 }
 
-let onPeakDecide: ((peakId: string, optionIndex: number) => void) | null = null;
+let onPeakDecide: ((peakId: string, optionIndex: number, note?: string) => void) | null = null;
 let onPeakLetAgentDecide: ((peakId: string) => void) | null = null;
 let onPeakPause: ((peakId: string) => void) | null = null;
 
 export function setPeakHandlers(handlers: {
-  onDecide: (peakId: string, optionIndex: number) => void;
+  onDecide: (peakId: string, optionIndex: number, note?: string) => void;
   onLetAgentDecide: (peakId: string) => void;
   onPause: (peakId: string) => void;
 }): void {
@@ -331,7 +331,9 @@ export function renderPeakCard(peak: PeakData): void {
       chooseBtn.className = "peak-choose-btn";
       chooseBtn.textContent = "Choose";
       chooseBtn.addEventListener("click", () => {
-        if (onPeakDecide) onPeakDecide(peak.id, idx);
+        const noteInput = el.querySelector(".peak-note-input") as HTMLTextAreaElement | null;
+        const note = noteInput?.value.trim() || undefined;
+        if (onPeakDecide) onPeakDecide(peak.id, idx, note);
         markPeakResolved(el, `Chose: ${opt.label}`);
       });
       optEl.appendChild(chooseBtn);
@@ -339,6 +341,16 @@ export function renderPeakCard(peak: PeakData): void {
     });
     el.appendChild(optionsEl);
   }
+
+  // Note input
+  const noteWrap = document.createElement("div");
+  noteWrap.className = "peak-note";
+  const noteInput = document.createElement("textarea");
+  noteInput.className = "peak-note-input";
+  noteInput.placeholder = "Add a note (optional)...";
+  noteInput.rows = 2;
+  noteWrap.appendChild(noteInput);
+  el.appendChild(noteWrap);
 
   // Action bar
   const actions = document.createElement("div");

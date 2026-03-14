@@ -14,6 +14,9 @@ export interface AgentRuntimeConfig {
   sandboxMode?: SandboxMode;
   threadId?: string;
   serviceName?: string;
+  claudeSessionId?: string;
+  claudeBridgeFingerprint?: string;
+  claudeSettingsPath?: string;
 }
 
 function parseMetadata(agentName: string): Record<string, unknown> {
@@ -48,6 +51,9 @@ export function getAgentRuntimeConfig(agentName: string): AgentRuntimeConfig {
     sandboxMode: typeof meta.sandboxMode === "string" ? meta.sandboxMode as SandboxMode : undefined,
     threadId: typeof meta.threadId === "string" ? meta.threadId : undefined,
     serviceName: typeof meta.serviceName === "string" ? meta.serviceName : undefined,
+    claudeSessionId: typeof meta.claudeSessionId === "string" ? meta.claudeSessionId : undefined,
+    claudeBridgeFingerprint: typeof meta.claudeBridgeFingerprint === "string" ? meta.claudeBridgeFingerprint : undefined,
+    claudeSettingsPath: typeof meta.claudeSettingsPath === "string" ? meta.claudeSettingsPath : undefined,
   };
 }
 

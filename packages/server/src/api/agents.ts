@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import type { Router as RouterType } from "express";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -15,6 +15,7 @@ import {
   clearAgentMetadataKeys,
   DEFAULT_PROVIDER,
   getAgentRuntimeConfig,
+  mergeAgentMetadata,
   getProvider,
   type AgentProvider,
   type ApprovalPolicy,
@@ -37,6 +38,26 @@ const AGENTS_DIR = path.join(PROJECT_ROOT, "agents");
 const BRIDGE_PATH = path.join(PROJECT_ROOT, "packages/mcp-bridge/dist/index.js");
 
 const router: RouterType = Router();
+
+export interface ClaudeLaunchSpec {
+  cmd: string;
+  sessionId: string;
+  bridgeFingerprint: string;
+  settingsPath: string | null;
+  forceNewSession: boolean;
+}
+
+export interface ClaudeRuntimeVerification {
+  session: string;
+  panePid: number;
+  processCommand: string;
+  processStartedAt: string;
+  sessionId: string;
+  bridgeFingerprint: string;
+  settingsPath: string | null;
+  forceNewSession: boolean;
+  command: string;
+}
 
 // --- Helper: find node binary ---
 function findNodePath(): string {
@@ -123,6 +144,8 @@ CRITICAL: Always pass the \`channel\` parameter from the incoming message to bot
 
 ### Project context
 - \`get_project_context\` - get current project info and assignment details
+- \`tool_preflight\` - refresh tool operating memory after restart or tool changes
+- \`tool_handbook\` - look up exact tool parameters, sequencing, and pitfalls
 - \`reflect_on_task\` - submit reflection after completing work
 
 ## Workspace
@@ -173,6 +196,8 @@ CRITICAL: Always pass the \`channel\` parameter from the incoming message.
 - \`memory_read\` / \`memory_write\` / \`memory_search\` / \`memory_status\`
 - \`get_project_context\` - current project info
 - \`save_worklog\` / \`load_worklog\`
+- \`tool_preflight\` - refresh tool operating memory after restart or tool changes
+- \`tool_handbook\` - look up exact tool parameters, sequencing, and pitfalls
 
 ## Workspace pointers
 - \`.crew/current-project\` - canonical project root
@@ -249,6 +274,179 @@ async function killAgentProcesses(name: string): Promise<void> {
   } catch { /* no matching processes */ }
 }
 
+function getClaudeSettingsPath(agentDir: string): string {
+  return path.join(agentDir, ".claude", "settings.local.json");
+}
+
+function computeClaudeBridgeFingerprint(agentDir: string): string {
+  const hasher = createHash("sha256");
+  const inputs = [
+    BRIDGE_PATH,
+    path.join(PROJECT_ROOT, "packages", "mcp-bridge", "dist", "tool-memory.js"),
+    path.join(agentDir, ".mcp.json"),
+    getClaudeSettingsPath(agentDir),
+  ];
+  for (const input of inputs) {
+    hasher.update(`FILE:${path.basename(input)}:`);
+    if (fs.existsSync(input)) {
+      hasher.update(fs.readFileSync(input));
+    } else {
+      hasher.update("MISSING");
+    }
+  }
+  return hasher.digest("hex").slice(0, 16);
+}
+
+function buildClaudeLaunchSpec(
+  agentDir: string,
+  claudePath: string,
+  agentName: string,
+  options?: { forceNewSession?: boolean },
+): ClaudeLaunchSpec {
+  const config = getAgentRuntimeConfig(agentName);
+  const env = buildAgentWorkspaceEnv(agentName);
+  const exports = Object.entries(env)
+    .map(([key, value]) => `${key}='${value.replace(/'/g, "'\\''")}'`)
+    .join(" ");
+  const mcpConfigPath = `${agentDir}/.mcp.json`;
+  const settingsPath = getClaudeSettingsPath(agentDir);
+  const bridgeFingerprint = computeClaudeBridgeFingerprint(agentDir);
+  const fingerprintChanged = config.claudeBridgeFingerprint !== bridgeFingerprint;
+  const forceNewSession = !!options?.forceNewSession || fingerprintChanged || !config.claudeSessionId;
+  const sessionId = forceNewSession ? randomUUID() : (config.claudeSessionId as string);
+
+  mergeAgentMetadata(agentName, {
+    claudeSessionId: sessionId,
+    claudeBridgeFingerprint: bridgeFingerprint,
+    claudeSettingsPath: fs.existsSync(settingsPath) ? settingsPath : null,
+  });
+
+  // Determine cwd and system prompt based on assignment type
+  const db = getDb();
+  const assignment = db.prepare(`
+    SELECT pa.assignment_type, p.directory
+    FROM project_agents pa
+    JOIN projects p ON p.id = pa.project_id
+    WHERE pa.agent_name = ? AND pa.status = 'active' AND p.status = 'active'
+    ORDER BY pa.assigned_at DESC LIMIT 1
+  `).get(agentName) as { assignment_type: string; directory: string } | undefined;
+
+  const isDedicated = assignment?.assignment_type === "dedicated" && assignment?.directory;
+  const cwd = isDedicated ? assignment.directory : agentDir;
+
+  let cmd = `unset CLAUDECODE && export ${exports} && cd '${cwd}' && '${claudePath}' --mcp-config '${mcpConfigPath}' --strict-mcp-config --setting-sources user --session-id ${sessionId}`;
+  if (fs.existsSync(settingsPath)) {
+    cmd += ` --settings '${settingsPath}'`;
+  }
+  if (config.model) cmd += ` --model ${config.model}`;
+  if (config.effort) cmd += ` --effort ${config.effort}`;
+
+  // Build --append-system-prompt content
+  let systemPrompt = "";
+
+  if (isDedicated) {
+    const agentClaudeMdPath = path.join(agentDir, "CLAUDE.md");
+    if (fs.existsSync(agentClaudeMdPath)) {
+      systemPrompt += fs.readFileSync(agentClaudeMdPath, "utf-8");
+    }
+    const projectContext = getAgentProjectContext(agentName);
+    if (projectContext) {
+      const runtimeGuard = buildRuntimeProjectGuard(projectContext);
+      if (runtimeGuard) {
+        systemPrompt += (systemPrompt ? "\n\n" : "") + runtimeGuard;
+      }
+      const workspaceInfo = extractWorkspaceInfo(projectContext);
+      if (workspaceInfo) {
+        systemPrompt += (systemPrompt ? "\n\n" : "") + workspaceInfo;
+      }
+    }
+  } else {
+    const projectContext = getAgentProjectContext(agentName);
+    if (projectContext) {
+      systemPrompt = projectContext;
+    }
+  }
+
+  if (systemPrompt) {
+    const escaped = systemPrompt.replace(/'/g, "'\\''");
+    cmd += ` --append-system-prompt '${escaped}'`;
+  }
+
+  return {
+    cmd,
+    sessionId,
+    bridgeFingerprint,
+    settingsPath: fs.existsSync(settingsPath) ? settingsPath : null,
+    forceNewSession,
+  };
+}
+
+async function getTmuxPanePid(session: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync("tmux", ["list-panes", "-t", session, "-F", "#{pane_pid}"]);
+    const pid = parseInt(stdout.trim().split("\n")[0] || "", 10);
+    return Number.isFinite(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getProcessCommand(pid: number): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "command="]);
+    const text = stdout.trim();
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getProcessStartTime(pid: number): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="]);
+    const text = stdout.trim();
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function startVerifiedClaudeSession(
+  agentDir: string,
+  claudePath: string,
+  agentName: string,
+  options?: { forceNewSession?: boolean; previousPanePid?: number | null },
+): Promise<ClaudeRuntimeVerification> {
+  const session = `crew-${agentName}`;
+  const spec = buildClaudeLaunchSpec(agentDir, claudePath, agentName, options);
+  await execFileAsync("tmux", ["new-session", "-d", "-s", session, spec.cmd]);
+
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const panePid = await getTmuxPanePid(session);
+    if (panePid && (!options?.previousPanePid || panePid !== options.previousPanePid)) {
+      const processCommand = await getProcessCommand(panePid);
+      if (processCommand && processCommand.includes("claude")) {
+        const processStartedAt = await getProcessStartTime(panePid);
+        return {
+          session,
+          panePid,
+          processCommand,
+          processStartedAt: processStartedAt || "",
+          sessionId: spec.sessionId,
+          bridgeFingerprint: spec.bridgeFingerprint,
+          settingsPath: spec.settingsPath,
+          forceNewSession: spec.forceNewSession,
+          command: spec.cmd,
+        };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  throw new Error(`Claude session for ${agentName} did not become healthy in time`);
+}
+
 // ========== Routes ==========
 
 // POST /agents/register - MCP bridge calls this on startup
@@ -286,13 +484,22 @@ router.post("/register", (req: Request, res: Response) => {
 });
 
 // POST /agents/create - Create workspace + register + optionally wake
-router.post("/create", (req: Request, res: Response) => {
-  const { name, role, wake, provider } = req.body as {
+router.post("/create", async (req: Request, res: Response) => {
+  const { name, role, wake, provider, instructions, requested_by, permissions } = req.body as {
     name?: string;
     role?: string;
     wake?: boolean;
     provider?: AgentProvider;
+    instructions?: string;
+    requested_by?: string;
+    permissions?: string[];
   };
+
+  // When called by an agent (requested_by present), only author is allowed
+  if (requested_by && requested_by !== "author") {
+    res.status(403).json({ error: "Only the author agent can create agents" });
+    return;
+  }
   if (!name || typeof name !== "string") {
     res.status(400).json({ error: "name is required" });
     return;
@@ -301,6 +508,11 @@ router.post("/create", (req: Request, res: Response) => {
   // Validate name (alphanumeric + hyphens only)
   if (!/^[\w][\w-]*$/.test(name)) {
     res.status(400).json({ error: "Invalid agent name. Use letters, numbers, hyphens only." });
+    return;
+  }
+
+  if (requested_by === "author" && name === "integrator") {
+    res.status(403).json({ error: "Integrator is protected and cannot be recreated or overwritten by the author agent" });
     return;
   }
 
@@ -320,6 +532,43 @@ router.post("/create", (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ error: `Failed to create workspace: ${(err as Error).message}` });
     return;
+  }
+
+  if (agentProvider !== "codex") {
+    // Overwrite CLAUDE.md with custom instructions if provided.
+    if (instructions) {
+      fs.writeFileSync(path.join(agentDir, "CLAUDE.md"), instructions);
+    }
+
+    // Generate default settings.local.json with standard MCP tool permissions.
+    const settingsDir = path.join(agentDir, ".claude");
+    if (!fs.existsSync(path.join(settingsDir, "settings.local.json"))) {
+      fs.mkdirSync(settingsDir, { recursive: true });
+      const defaultPerms = permissions || [
+        "mcp__claude-crew__send_to_chat",
+        "mcp__claude-crew__read_chat",
+        "mcp__claude-crew__check_mentions",
+        "mcp__claude-crew__list_agents",
+        "mcp__claude-crew__read_shared_file",
+        "mcp__claude-crew__write_shared_file",
+        "mcp__claude-crew__list_shared_files",
+        "mcp__claude-crew__save_worklog",
+        "mcp__claude-crew__load_worklog",
+        "mcp__claude-crew__tool_preflight",
+        "mcp__claude-crew__tool_handbook",
+        "mcp__claude-crew__search_chat",
+        "mcp__claude-crew__get_shared_file_meta",
+      ];
+      const settings = {
+        permissions: {
+          allow: defaultPerms,
+          disallowedTools: ["MCPSearch"],
+        },
+        enableAllProjectMcpServers: true,
+        enabledMcpjsonServers: ["claude-crew"],
+      };
+      fs.writeFileSync(path.join(settingsDir, "settings.local.json"), JSON.stringify(settings, null, 2) + "\n");
+    }
   }
 
   // Register in DB
@@ -345,13 +594,20 @@ router.post("/create", (req: Request, res: Response) => {
   // Optionally wake (start provider runtime)
   if (wake) {
     if (agentProvider === "codex") {
-      startCodexAgent(name)
-        .then(() => {
-          res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir, woke: true });
-        })
-        .catch((err) => {
-          res.status(500).json({ ok: false, id: agentId, name, provider: agentProvider, workspace: agentDir, woke: false, wakeError: (err as Error).message });
+      try {
+        await startCodexAgent(name);
+        res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir, woke: true });
+      } catch (err) {
+        res.status(500).json({
+          ok: false,
+          id: agentId,
+          name,
+          provider: agentProvider,
+          workspace: agentDir,
+          woke: false,
+          wakeError: (err as Error).message,
         });
+      }
       return;
     }
 
@@ -361,19 +617,28 @@ router.post("/create", (req: Request, res: Response) => {
       return;
     }
 
-    const session = `crew-${name}`;
-    const cmd = buildClaudeCmd(agentDir, claudePath, name);
-    execFile("tmux", ["new-session", "-d", "-s", session, cmd], (err) => {
+    try {
+      const verification = await startVerifiedClaudeSession(agentDir, claudePath, name);
       res.json({
         ok: true,
         id: agentId,
         name,
         provider: agentProvider,
         workspace: agentDir,
-        woke: !err,
-        wakeError: err ? err.message : undefined,
+        woke: true,
+        verification,
       });
-    });
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        id: agentId,
+        name,
+        provider: agentProvider,
+        workspace: agentDir,
+        woke: false,
+        wakeError: (err as Error).message,
+      });
+    }
   } else {
     res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir });
   }
@@ -634,6 +899,7 @@ export function getAgentProjectContext(agentName: string): string | null {
   }
   if (agents.length > 0) {
     ctx += `### Team: ${agents.map(a => `${a.agent_name}${a.role_in_project ? ` (${a.role_in_project})` : ""}`).join(", ")}\n`;
+    ctx += "Only collaborate with agents listed in this team for project work. If the team may have changed, refresh with get_project_context or list_agents before routing work.\n";
   }
 
   // Enforce size budget (~3000 tokens ~ 12000 chars)
@@ -645,65 +911,7 @@ export function getAgentProjectContext(agentName: string): string | null {
 
 /** Build the claude CLI command with optional --model, --effort, and --append-system-prompt flags */
 export function buildClaudeCmd(agentDir: string, claudePath: string, agentName: string): string {
-  const config = getAgentConfig(agentName);
-  const env = buildAgentWorkspaceEnv(agentName);
-  const exports = Object.entries(env)
-    .map(([key, value]) => `${key}='${value.replace(/'/g, "'\\''")}'`)
-    .join(" ");
-  const mcpConfigPath = `${agentDir}/.mcp.json`;
-
-  // Determine cwd and system prompt based on assignment type
-  const db = getDb();
-  const assignment = db.prepare(`
-    SELECT pa.assignment_type, p.directory
-    FROM project_agents pa
-    JOIN projects p ON p.id = pa.project_id
-    WHERE pa.agent_name = ? AND pa.status = 'active' AND p.status = 'active'
-    ORDER BY pa.assigned_at DESC LIMIT 1
-  `).get(agentName) as { assignment_type: string; directory: string } | undefined;
-
-  const isDedicated = assignment?.assignment_type === "dedicated" && assignment?.directory;
-  const cwd = isDedicated ? assignment.directory : agentDir;
-
-  let cmd = `unset CLAUDECODE && export ${exports} && cd '${cwd}' && '${claudePath}' --mcp-config '${mcpConfigPath}' --strict-mcp-config`;
-  if (config.model) cmd += ` --model ${config.model}`;
-  if (config.effort) cmd += ` --effort ${config.effort}`;
-
-  // Build --append-system-prompt content
-  let systemPrompt = "";
-
-  if (isDedicated) {
-    // Dedicated agent: cwd is project dir, project CLAUDE.md is auto-read by Claude Code.
-    // Inject agent instructions (role, tools, rules) via --append-system-prompt.
-    const agentClaudeMdPath = path.join(agentDir, "CLAUDE.md");
-    if (fs.existsSync(agentClaudeMdPath)) {
-      systemPrompt += fs.readFileSync(agentClaudeMdPath, "utf-8");
-    }
-    // Append workspace/workplace runtime info not covered by project CLAUDE.md
-    const projectContext = getAgentProjectContext(agentName);
-    if (projectContext) {
-      // Extract only the workspace-specific parts (workplace, pointers, team)
-      // that are not already in the project CLAUDE.md
-      const workspaceInfo = extractWorkspaceInfo(projectContext);
-      if (workspaceInfo) {
-        systemPrompt += "\n\n" + workspaceInfo;
-      }
-    }
-  } else {
-    // Global agent or no project: cwd is agent dir, agent CLAUDE.md is auto-read.
-    // Inject full project context via --append-system-prompt (existing behavior).
-    const projectContext = getAgentProjectContext(agentName);
-    if (projectContext) {
-      systemPrompt = projectContext;
-    }
-  }
-
-  if (systemPrompt) {
-    const escaped = systemPrompt.replace(/'/g, "'\\''");
-    cmd += ` --append-system-prompt '${escaped}'`;
-  }
-
-  return cmd;
+  return buildClaudeLaunchSpec(agentDir, claudePath, agentName).cmd;
 }
 
 /**
@@ -731,6 +939,64 @@ function extractWorkspaceInfo(projectContext: string): string {
   return relevant.length > 0 ? relevant.join("\n") : "";
 }
 
+function buildRuntimeProjectGuard(projectContext: string): string {
+  const lines = projectContext.split("\n");
+  const relevant: string[] = [
+    "## Runtime Project Guard",
+    "You are currently working inside a Claude Crew project assignment.",
+    "Only route project work to agents listed in the current project team below.",
+    "If the team may have changed, call get_project_context or list_agents before delegating.",
+  ];
+
+  for (const line of lines) {
+    if (line.startsWith("## Active Project:") || line.startsWith("### Team:")) {
+      relevant.push(line);
+    }
+  }
+
+  return relevant.join("\n");
+}
+
+// PUT /agents/:name/instructions - Update agent CLAUDE.md (author only)
+router.put("/:name/instructions", (req: Request, res: Response) => {
+  const { name } = req.params;
+  const { instructions, requested_by } = req.body as {
+    instructions?: string;
+    requested_by?: string;
+  };
+
+  if (requested_by !== "author") {
+    res.status(403).json({ error: "Only the author agent can update agent instructions" });
+    return;
+  }
+
+  if (!instructions || typeof instructions !== "string") {
+    res.status(400).json({ error: "instructions is required" });
+    return;
+  }
+
+  // Integrator is protected from author modifications
+  if (name === "integrator") {
+    res.status(403).json({ error: "Integrator's instructions are protected and cannot be modified by the author agent" });
+    return;
+  }
+
+  const agentDir = path.join(AGENTS_DIR, name as string);
+  if (!fs.existsSync(agentDir)) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+
+  const provider = getProvider(name as string);
+  if (provider === "codex") {
+    res.status(400).json({ error: "Cannot update CLAUDE.md for codex agents. Use AGENTS.md instead." });
+    return;
+  }
+
+  fs.writeFileSync(path.join(agentDir, "CLAUDE.md"), instructions);
+  res.json({ ok: true, name });
+});
+
 // PUT /agents/:name/config - Set model and effort (author only)
 router.put("/:name/config", async (req: Request, res: Response) => {
   const { name } = req.params;
@@ -747,6 +1013,12 @@ router.put("/:name/config", async (req: Request, res: Response) => {
   // Only author can change agent config
   if (requested_by !== "author") {
     res.status(403).json({ error: "Only the author agent can change agent configuration" });
+    return;
+  }
+
+  // Integrator is protected from author modifications
+  if (name === "integrator") {
+    res.status(403).json({ error: "Integrator's configuration is protected and cannot be modified by the author agent" });
     return;
   }
 
@@ -815,8 +1087,7 @@ router.put("/:name/config", async (req: Request, res: Response) => {
         if (claudePath) {
           const agentDir = path.join(AGENTS_DIR, name as string);
           if (fs.existsSync(agentDir)) {
-            const cmd = buildClaudeCmd(agentDir, claudePath, name as string);
-            await execFileAsync("tmux", ["new-session", "-d", "-s", session, cmd]);
+            await startVerifiedClaudeSession(agentDir, claudePath, name as string, { forceNewSession: true });
           }
         }
       }
@@ -860,6 +1131,13 @@ async function authorOnlyAction(req: Request, res: Response, action: () => Promi
     return;
   }
 
+  // Integrator is protected from author runtime control
+  const agentName = req.params.name;
+  if (agentName === "integrator") {
+    res.status(403).json({ error: "Integrator's runtime is protected and cannot be controlled by the author agent" });
+    return;
+  }
+
   try {
     const ok = await action();
     res.json({ ok });
@@ -884,8 +1162,7 @@ router.post("/:name/restart", async (req: Request, res: Response) => {
       throw new Error("Claude Code CLI not found");
     }
     const agentDir = path.join(AGENTS_DIR, name as string);
-    const cmd = buildClaudeCmd(agentDir, claudePath, name as string);
-    await execFileAsync("tmux", ["new-session", "-d", "-s", session, cmd]);
+    await startVerifiedClaudeSession(agentDir, claudePath, name as string, { forceNewSession: true });
     return true;
   });
 });
@@ -931,8 +1208,7 @@ router.post("/:name/reset-session", async (req: Request, res: Response) => {
       throw new Error("Claude Code CLI not found");
     }
     const agentDir = path.join(AGENTS_DIR, name as string);
-    const cmd = buildClaudeCmd(agentDir, claudePath, name as string);
-    await execFileAsync("tmux", ["new-session", "-d", "-s", session, cmd]);
+    await startVerifiedClaudeSession(agentDir, claudePath, name as string, { forceNewSession: true });
     return true;
   });
 });

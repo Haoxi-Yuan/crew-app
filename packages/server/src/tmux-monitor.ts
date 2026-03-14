@@ -9,7 +9,7 @@ import {
   SESSION_AUTO_CYCLE_CONTEXT_PERCENT,
   SESSION_AUTO_CYCLE_COOLDOWN_MS,
 } from "./config.js";
-import { buildClaudeCmd } from "./api/agents.js";
+import { startVerifiedClaudeSession } from "./api/agents.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -698,8 +698,7 @@ async function cycleAgentSession(agentName: string): Promise<void> {
     return;
   }
 
-  const cmd = buildClaudeCmd(agentDir, claudePath, agentName);
-  await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, cmd]);
+  await startVerifiedClaudeSession(agentDir, claudePath, agentName, { forceNewSession: true });
 
   // Reset context tracking
   agentContextPercent.set(agentName, 0);

@@ -75,6 +75,11 @@ function generateProjectClaudeMd(project: ProjectRow): string {
     lines.push("");
   }
 
+  lines.push("## Collaboration Boundary");
+  lines.push("- Only delegate project work to agents listed in the Team section above.");
+  lines.push("- If team membership changes later, refresh with Claude Crew project tools or updated context before routing work.");
+  lines.push("");
+
   if (standards.length > 0) {
     lines.push(`## Shared Standards`);
     for (const s of standards) {

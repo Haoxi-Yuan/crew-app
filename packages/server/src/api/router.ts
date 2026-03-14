@@ -1,9 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import type { Router as RouterType } from "express";
 import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
-import agentsRouter, { buildClaudeCmd } from "./agents.js";
+import agentsRouter, { startVerifiedClaudeSession } from "./agents.js";
 import messagesRouter from "./messages.js";
 import sharedFilesRouter from "./shared-files.js";
 import importRouter from "./import.js";
@@ -17,9 +18,11 @@ import peaksRouter from "./peaks.js";
 import { getDb, type PendingMentionRow, type MessageRow } from "../db/index.js";
 import { PROJECT_ROOT } from "../config.js";
 import { DEFAULT_PROVIDER, getProvider } from "../agent-runtime.js";
-import { startCodexAgent } from "../providers/codex.js";
+import { startCodexAgent, stopCodexAgent } from "../providers/codex.js";
+import { broadcast } from "../ws/handler.js";
 
 const router: RouterType = Router();
+const execFileAsync = promisify(execFile);
 
 router.use("/agents", agentsRouter);
 router.use("/messages", messagesRouter);
@@ -82,74 +85,136 @@ router.post("/mentions/:id/ack", (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+function findClaudePath(): string {
+  try { return execFileSync("which", ["claude"]).toString().trim(); } catch {}
+  const candidates = [
+    path.join(process.env.HOME || "", ".nvm/versions/node"),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+  ];
+  for (const c of candidates) {
+    if (c.includes("nvm")) {
+      try {
+        const dirs = fs.readdirSync(c);
+        for (const d of dirs) {
+          const p = path.join(c, d, "bin/claude");
+          if (fs.existsSync(p)) return p;
+        }
+      } catch {}
+    } else if (fs.existsSync(c)) {
+      return c;
+    }
+  }
+  return "";
+}
+
+async function startAgentRuntime(
+  name: string,
+  options?: { forceNewSession?: boolean },
+): Promise<{
+  ok: boolean;
+  name: string;
+  provider: string;
+  message?: string;
+  verification?: {
+    session: string;
+    panePid: number;
+    processCommand: string;
+    processStartedAt: string;
+    sessionId: string;
+    bridgeFingerprint: string;
+    settingsPath: string | null;
+    forceNewSession: boolean;
+    command: string;
+  };
+}> {
+  const agentsDir = path.join(PROJECT_ROOT, "agents");
+  const agentDir = path.join(agentsDir, name);
+  const session = `crew-${name}`;
+
+  if (!fs.existsSync(agentDir)) {
+    throw new Error(`Agent workspace not found: ${name}. Use 'crew add ${name} <role>' first.`);
+  }
+
+  const provider = getProvider(name);
+  if (provider === "codex") {
+    await startCodexAgent(name);
+    return { ok: true, name, provider };
+  }
+
+  try {
+    await execFileAsync("tmux", ["has-session", "-t", session]);
+    return { ok: true, name, provider, message: "already running" };
+  } catch {}
+
+  const claudePath = findClaudePath();
+  if (!claudePath) {
+    throw new Error("Claude Code CLI not found");
+  }
+
+  const verification = await startVerifiedClaudeSession(agentDir, claudePath, name, {
+    forceNewSession: options?.forceNewSession,
+  });
+  return { ok: true, name, provider, verification };
+}
+
+async function stopAgentRuntime(name: string): Promise<{ ok: boolean; name: string; provider: string; stopped: boolean }> {
+  const provider = getProvider(name);
+
+  if (provider === "codex") {
+    await stopCodexAgent(name);
+    return { ok: true, name, provider, stopped: true };
+  }
+
+  const session = `crew-${name}`;
+  try {
+    await execFileAsync("tmux", ["has-session", "-t", session]);
+  } catch {
+    return { ok: true, name, provider, stopped: false };
+  }
+
+  await execFileAsync("tmux", ["kill-session", "-t", session]);
+  const db = getDb();
+  db.prepare("UPDATE agents SET status = 'offline' WHERE name = ?").run(name);
+  broadcast({ type: "agent:status", data: { name, status: "offline", provider } });
+  return { ok: true, name, provider, stopped: true };
+}
+
 // Wake agent: start provider runtime
-router.post("/wake", (req: Request, res: Response) => {
+router.post("/wake", async (req: Request, res: Response) => {
   const { name } = req.body as { name?: string };
   if (!name) {
     res.status(400).json({ error: "name is required" });
     return;
   }
 
-  const agentsDir = path.join(PROJECT_ROOT, "agents");
-  const agentDir = path.join(agentsDir, name);
-  const session = `crew-${name}`;
-
-  if (!fs.existsSync(agentDir)) {
-    res.status(404).json({ error: `Agent workspace not found: ${name}. Use 'crew add ${name} <role>' first.` });
-    return;
+  try {
+    const result = await startAgentRuntime(name);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: `Failed to wake agent: ${(err as Error).message}` });
   }
+});
 
-  const provider = getProvider(name);
-  if (provider === "codex") {
-    startCodexAgent(name)
-      .then(() => res.json({ ok: true, name, provider }))
-      .catch((err) => res.status(500).json({ error: `Failed to wake Codex agent: ${(err as Error).message}` }));
-    return;
+router.post("/agents/:name/system-stop", async (req: Request, res: Response) => {
+  const name = typeof req.params.name === "string" ? req.params.name : String(req.params.name);
+  try {
+    const result = await stopAgentRuntime(name);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: `Failed to stop agent: ${(err as Error).message}` });
   }
+});
 
-  // Check if already running
-  execFile("tmux", ["has-session", "-t", session], (checkErr) => {
-    if (!checkErr) {
-      res.json({ ok: true, name, message: "already running" });
-      return;
-    }
-    // Find claude path
-    let claudePath = "";
-    try { claudePath = execFileSync("which", ["claude"]).toString().trim(); } catch {}
-    if (!claudePath) {
-      const candidates = [
-        path.join(process.env.HOME || "", ".nvm/versions/node"),
-        "/opt/homebrew/bin/claude",
-        "/usr/local/bin/claude",
-      ];
-      for (const c of candidates) {
-        if (c.includes("nvm")) {
-          try {
-            const dirs = fs.readdirSync(c);
-            for (const d of dirs) {
-              const p = path.join(c, d, "bin/claude");
-              if (fs.existsSync(p)) { claudePath = p; break; }
-            }
-          } catch {}
-        } else if (fs.existsSync(c)) { claudePath = c; }
-        if (claudePath) break;
-      }
-    }
-    if (!claudePath) {
-      res.status(500).json({ error: "Claude Code CLI not found" });
-      return;
-    }
-
-    // Start new tmux session with model/effort config from DB
-    const cmd = buildClaudeCmd(agentDir, claudePath, name);
-    execFile("tmux", ["new-session", "-d", "-s", session, cmd], (err) => {
-      if (err) {
-        res.status(500).json({ error: `Failed to wake agent: ${err.message}` });
-        return;
-      }
-      res.json({ ok: true, name, provider });
-    });
-  });
+router.post("/agents/:name/system-restart", async (req: Request, res: Response) => {
+  const name = typeof req.params.name === "string" ? req.params.name : String(req.params.name);
+  try {
+    await stopAgentRuntime(name);
+    const result = await startAgentRuntime(name, { forceNewSession: true });
+    res.json({ ...result, restarted: true });
+  } catch (err) {
+    res.status(500).json({ error: `Failed to restart agent: ${(err as Error).message}` });
+  }
 });
 
 // Wake all agents
@@ -215,12 +280,16 @@ router.post("/wake-all", (_req: Request, res: Response) => {
         if (remaining === 0) res.json({ ok: true, launched, skipped });
         return;
       }
-      const cmd = buildClaudeCmd(agentDir, claudePath, name);
-      execFile("tmux", ["new-session", "-d", "-s", session, cmd], (err) => {
-        if (!err) launched++;
-        remaining--;
-        if (remaining === 0) res.json({ ok: true, launched, skipped });
-      });
+      startVerifiedClaudeSession(agentDir, claudePath, name)
+        .then(() => {
+          launched++;
+          remaining--;
+          if (remaining === 0) res.json({ ok: true, launched, skipped });
+        })
+        .catch(() => {
+          remaining--;
+          if (remaining === 0) res.json({ ok: true, launched, skipped });
+        });
     });
   }
 });
