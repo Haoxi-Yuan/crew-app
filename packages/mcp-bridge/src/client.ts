@@ -12,6 +12,7 @@ export interface MentionInfo {
 
 export interface ChatMessage {
   id: number;
+  channel_id?: string;
   sender_type: string;
   sender_name: string;
   content: string;
@@ -127,6 +128,18 @@ export async function readChat(
   if (channelId) params.set("channel_id", channelId);
   const qs = params.toString();
   return (await request(`/messages${qs ? "?" + qs : ""}`)) as ChatMessage[];
+}
+
+export async function searchChat(
+  query: string,
+  channelId?: string,
+  limit?: number
+): Promise<ChatMessage[]> {
+  const params = new URLSearchParams();
+  params.set("query", query);
+  if (channelId) params.set("channel_id", channelId);
+  if (limit) params.set("limit", String(limit));
+  return (await request(`/messages/search?${params.toString()}`)) as ChatMessage[];
 }
 
 export async function sendMessage(

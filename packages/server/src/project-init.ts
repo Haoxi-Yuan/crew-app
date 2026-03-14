@@ -8,32 +8,31 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getDb, type ProjectRow, type SharedStandardRow } from "./db/index.js";
-import { DATA_DIR } from "./config.js";
 
 /**
  * Initialize a project's directory and files.
  * Called after project creation or when syncing standards.
+ *
+ * Creates .claude-crew/ config directory inside the user-specified project
+ * directory and generates CLAUDE.md at the project root.
  */
 export function initProjectDirectory(projectId: string): { directory: string; claudeMd: string } {
   const db = getDb();
   const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(projectId) as ProjectRow | undefined;
   if (!project) throw new Error(`Project not found: ${projectId}`);
 
-  const projectDir = project.directory || path.join(DATA_DIR, "projects", project.slug);
+  const projectDir = project.directory;
+  if (!projectDir) throw new Error(`Project "${project.name}" has no directory set`);
 
-  // Ensure canonical project root exists. Derived artifacts live under workplaces/.
-  fs.mkdirSync(projectDir, { recursive: true });
+  // Create .claude-crew/ config directory inside user's project
+  const crewConfigDir = path.join(projectDir, ".claude-crew");
+  fs.mkdirSync(crewConfigDir, { recursive: true });
 
   // Generate CLAUDE.md from project config + standards
   const claudeMd = generateProjectClaudeMd(project);
 
-  // Write CLAUDE.md to project directory
+  // Write CLAUDE.md to project root directory
   fs.writeFileSync(path.join(projectDir, "CLAUDE.md"), claudeMd, "utf-8");
-
-  // Update project directory if it changed
-  if (project.directory !== projectDir) {
-    db.prepare("UPDATE projects SET directory = ? WHERE id = ?").run(projectDir, projectId);
-  }
 
   return { directory: projectDir, claudeMd };
 }

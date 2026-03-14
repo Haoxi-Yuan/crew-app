@@ -36,8 +36,9 @@ router.get("/", (req: Request, res: Response) => {
 
 // POST /channels - create public or group channel
 router.post("/", (req: Request, res: Response) => {
-  const { name, description, type, members } = req.body as {
+  const { name, description, type, members, project_id, workplace_id } = req.body as {
     name?: string; description?: string; type?: string; members?: string[];
+    project_id?: string; workplace_id?: string;
   };
   if (!name || typeof name !== "string") {
     res.status(400).json({ error: "name is required" });
@@ -57,10 +58,10 @@ router.post("/", (req: Request, res: Response) => {
   }
 
   db.prepare(
-    "INSERT INTO channels (id, name, description, type, members, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)"
-  ).run(id, name, description || "", channelType, membersJson, now, now);
+    "INSERT INTO channels (id, name, description, type, members, project_id, workplace_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)"
+  ).run(id, name, description || "", channelType, membersJson, project_id || null, workplace_id || null, now, now);
 
-  const channel = { id, name, description: description || "", status: "active", type: channelType, members: members || null, created_at: now, updated_at: now };
+  const channel = { id, name, description: description || "", status: "active", type: channelType, members: members || null, project_id: project_id || null, workplace_id: workplace_id || null, created_at: now, updated_at: now };
   broadcast({ type: "channel:created", data: channel });
   res.json(channel);
 });

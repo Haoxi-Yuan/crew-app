@@ -5,8 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { syncAgentWorkspaceContext } from "../agent-context.js";
 import { getDb, type ProjectRow, type ProjectAgentRow, type WorkplaceRow } from "../db/index.js";
-import { DATA_DIR } from "../config.js";
 import { ensureDefaultWorkplace, listWorkplacesForProject } from "../storage-scope.js";
+import { initProjectDirectory } from "../project-init.js";
 import { broadcast } from "../ws/handler.js";
 
 const router: RouterType = Router();
@@ -40,7 +40,7 @@ function createWorkplace(project: ProjectRow, name: string, kind = "derived"): W
   const now = Date.now();
   const id = crypto.randomUUID();
   const slug = slugify(name) || "default";
-  const directory = path.join(project.directory || path.join(DATA_DIR, "projects", project.slug), "workplaces", slug);
+  const directory = path.join(project.directory, ".claude-crew", "workplaces", slug);
   fs.mkdirSync(directory, { recursive: true });
 
   db.prepare(`
@@ -133,31 +133,49 @@ router.get("/by-agent/:name", (req: Request, res: Response) => {
 
 // POST /projects - create a new project
 router.post("/", (req: Request, res: Response) => {
-  const { name, description, tech_stack, config } = req.body as {
+  const { directory, name, description, tech_stack, config } = req.body as {
+    directory?: string;
     name?: string;
     description?: string;
     tech_stack?: string[];
     config?: Record<string, unknown>;
   };
 
-  if (!name || typeof name !== "string") {
-    res.status(400).json({ error: "name is required" });
+  // directory is required and must be an existing absolute path
+  if (!directory || typeof directory !== "string") {
+    res.status(400).json({ error: "directory is required" });
+    return;
+  }
+  if (!path.isAbsolute(directory)) {
+    res.status(400).json({ error: "directory must be an absolute path" });
+    return;
+  }
+  if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) {
+    res.status(400).json({ error: "directory does not exist or is not a directory" });
     return;
   }
 
+  // Derive name from directory basename if not provided
+  const projectName = (name && typeof name === "string") ? name : path.basename(directory);
+
   const db = getDb();
   const id = crypto.randomUUID();
-  const slug = slugify(name);
+  const slug = slugify(projectName);
   const now = Date.now();
 
-  const existing = db.prepare("SELECT 1 FROM projects WHERE name = ? OR slug = ?").get(name, slug);
-  if (existing) {
+  // Check duplicate name/slug
+  const existingName = db.prepare("SELECT 1 FROM projects WHERE name = ? OR slug = ?").get(projectName, slug);
+  if (existingName) {
     res.status(409).json({ error: "project with this name already exists" });
     return;
   }
 
-  const projectDir = path.join(DATA_DIR, "projects", slug);
-  fs.mkdirSync(projectDir, { recursive: true });
+  // Check duplicate directory
+  const existingDir = db.prepare("SELECT name FROM projects WHERE directory = ?").get(directory) as { name: string } | undefined;
+  if (existingDir) {
+    res.status(409).json({ error: `directory is already used by project "${existingDir.name}"` });
+    return;
+  }
 
   const techStackJson = JSON.stringify(tech_stack || []);
   const configJson = JSON.stringify(config || {});
@@ -165,7 +183,10 @@ router.post("/", (req: Request, res: Response) => {
   db.prepare(`
     INSERT INTO projects (id, name, slug, description, tech_stack, status, config, directory, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
-  `).run(id, name, slug, description || "", techStackJson, configJson, projectDir, now, now);
+  `).run(id, projectName, slug, description || "", techStackJson, configJson, directory, now, now);
+
+  // Initialize project directory: create .claude-crew/ and CLAUDE.md
+  initProjectDirectory(id);
 
   // Create a default channel for the project
   const channelId = `project-${slug}`;
@@ -173,22 +194,22 @@ router.post("/", (req: Request, res: Response) => {
   if (!channelExists) {
     db.prepare(
       "INSERT INTO channels (id, name, description, status, type, project_id, created_at, updated_at) VALUES (?, ?, ?, 'active', 'public', ?, ?, ?)"
-    ).run(channelId, name, `Project channel for ${name}`, id, now, now);
+    ).run(channelId, projectName, `Project channel for ${projectName}`, id, now, now);
     broadcast({
       type: "channel:created",
-      data: { id: channelId, name, description: `Project channel for ${name}`, status: "active", type: "public", project_id: id, members: null, created_at: now, updated_at: now },
+      data: { id: channelId, name: projectName, description: `Project channel for ${projectName}`, status: "active", type: "public", project_id: id, members: null, created_at: now, updated_at: now },
     });
   }
 
   const project = {
     id,
-    name,
+    name: projectName,
     slug,
     description: description || "",
     tech_stack: tech_stack || [],
     status: "active",
     config: config || {},
-    directory: projectDir,
+    directory,
     created_at: now,
     updated_at: now,
     paused_at: null,

@@ -9,9 +9,15 @@ let dropdownItems: string[] = [];
 let activeIndex = 0;
 let mentionStart = -1;
 let onSend: ((text: string) => void) | null = null;
+let isComposing = false;
+let getActiveProject: (() => string | null) | null = null;
 
-export function initInput(sendCallback: (text: string) => void, getAgents: () => Agent[]): void {
+export function initInput(sendCallback: (text: string) => void, getAgents: () => Agent[], getProjectId?: () => string | null): void {
   onSend = sendCallback;
+  getActiveProject = getProjectId || null;
+
+  inputEl.addEventListener("compositionstart", () => { isComposing = true; });
+  inputEl.addEventListener("compositionend", () => { isComposing = false; });
 
   inputEl.addEventListener("input", () => {
     autoResize();
@@ -44,7 +50,7 @@ export function initInput(sendCallback: (text: string) => void, getAgents: () =>
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !isComposing) {
       e.preventDefault();
       doSend();
     }
@@ -89,8 +95,8 @@ function handleMentionInput(): void {
   mentionStart = atPos;
   const query = text.slice(atPos + 1, pos).toLowerCase();
 
-  const allOptions = ["all", ...agents.map((a) => a.name)];
-  dropdownItems = allOptions.filter((name) => name.toLowerCase().includes(query));
+  const baseOptions = getActiveProject?.() ? ["all", "project", ...agents.map((a) => a.name)] : ["all", ...agents.map((a) => a.name)];
+  dropdownItems = baseOptions.filter((name) => name.toLowerCase().includes(query));
 
   if (dropdownItems.length === 0) {
     hideDropdown();
@@ -111,7 +117,9 @@ function showDropdown(): void {
     const name = dropdownItems[i];
 
     if (name === "all") {
-      item.innerHTML = '<span class="agent-dot online"></span>@all (broadcast)';
+      item.innerHTML = '<span class="agent-dot online"></span>@all (global broadcast)';
+    } else if (name === "project") {
+      item.innerHTML = '<span class="agent-dot online"></span>@project (project agents)';
     } else {
       const agent = agents.find((a) => a.name === name);
       const status = agent?.status || "offline";

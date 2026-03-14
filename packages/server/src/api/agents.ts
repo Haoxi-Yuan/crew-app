@@ -109,7 +109,8 @@ CRITICAL: Always pass the \`channel\` parameter from the incoming message to bot
 ## Available tools
 ### Communication
 - \`send_to_chat(message, channel)\` - post a message to a channel (ALWAYS use this to reply)
-- \`read_chat(channel, limit, after_id)\` - read recent messages in a channel for context
+- \`read_chat(channel, limit, after_id, query)\` - read recent messages or search by keyword
+- \`search_chat(query, channel, limit)\` - search chat history by keyword for project context
 - \`check_mentions\` - check for @mentions directed at you
 - \`list_agents\` - see who else is online
 
@@ -124,11 +125,12 @@ CRITICAL: Always pass the \`channel\` parameter from the incoming message to bot
 - \`get_project_context\` - get current project info and assignment details
 - \`reflect_on_task\` - submit reflection after completing work
 
-## Workspace pointers
-- Default cwd stays in your own agent workspace
-- \`.crew/current-project\` points to the canonical project root when you have an active assignment
-- \`.crew/current-workplace\` points to the active workplace for derived artifacts and execution outputs
-- \`.crew/context.json\` contains the current project/workplace metadata
+## Workspace
+- If you are a dedicated agent, your cwd IS the project directory (like Claude Code / Codex)
+- If you are a global agent, your cwd is your own agent workspace
+- Your agent workspace is always at the path in env var CLAUDE_CREW_AGENT_DIR
+- \`.crew/current-project\` and \`.crew/current-workplace\` symlinks are in your agent workspace
+- \`.crew/context.json\` in your agent workspace contains project/workplace metadata
 
 ## Collaborating with other agents
 - Use \`@agent-name\` in your \`send_to_chat\` messages to request help from other agents
@@ -649,19 +651,84 @@ export function buildClaudeCmd(agentDir: string, claudePath: string, agentName: 
     .map(([key, value]) => `${key}='${value.replace(/'/g, "'\\''")}'`)
     .join(" ");
   const mcpConfigPath = `${agentDir}/.mcp.json`;
-  let cmd = `unset CLAUDECODE && export ${exports} && cd '${agentDir}' && '${claudePath}' --mcp-config '${mcpConfigPath}' --strict-mcp-config`;
+
+  // Determine cwd and system prompt based on assignment type
+  const db = getDb();
+  const assignment = db.prepare(`
+    SELECT pa.assignment_type, p.directory
+    FROM project_agents pa
+    JOIN projects p ON p.id = pa.project_id
+    WHERE pa.agent_name = ? AND pa.status = 'active' AND p.status = 'active'
+    ORDER BY pa.assigned_at DESC LIMIT 1
+  `).get(agentName) as { assignment_type: string; directory: string } | undefined;
+
+  const isDedicated = assignment?.assignment_type === "dedicated" && assignment?.directory;
+  const cwd = isDedicated ? assignment.directory : agentDir;
+
+  let cmd = `unset CLAUDECODE && export ${exports} && cd '${cwd}' && '${claudePath}' --mcp-config '${mcpConfigPath}' --strict-mcp-config`;
   if (config.model) cmd += ` --model ${config.model}`;
   if (config.effort) cmd += ` --effort ${config.effort}`;
 
-  // Layer 2: Inject project context via --append-system-prompt
-  const projectContext = getAgentProjectContext(agentName);
-  if (projectContext) {
-    // Escape single quotes for shell safety
-    const escaped = projectContext.replace(/'/g, "'\\''");
+  // Build --append-system-prompt content
+  let systemPrompt = "";
+
+  if (isDedicated) {
+    // Dedicated agent: cwd is project dir, project CLAUDE.md is auto-read by Claude Code.
+    // Inject agent instructions (role, tools, rules) via --append-system-prompt.
+    const agentClaudeMdPath = path.join(agentDir, "CLAUDE.md");
+    if (fs.existsSync(agentClaudeMdPath)) {
+      systemPrompt += fs.readFileSync(agentClaudeMdPath, "utf-8");
+    }
+    // Append workspace/workplace runtime info not covered by project CLAUDE.md
+    const projectContext = getAgentProjectContext(agentName);
+    if (projectContext) {
+      // Extract only the workspace-specific parts (workplace, pointers, team)
+      // that are not already in the project CLAUDE.md
+      const workspaceInfo = extractWorkspaceInfo(projectContext);
+      if (workspaceInfo) {
+        systemPrompt += "\n\n" + workspaceInfo;
+      }
+    }
+  } else {
+    // Global agent or no project: cwd is agent dir, agent CLAUDE.md is auto-read.
+    // Inject full project context via --append-system-prompt (existing behavior).
+    const projectContext = getAgentProjectContext(agentName);
+    if (projectContext) {
+      systemPrompt = projectContext;
+    }
+  }
+
+  if (systemPrompt) {
+    const escaped = systemPrompt.replace(/'/g, "'\\''");
     cmd += ` --append-system-prompt '${escaped}'`;
   }
 
   return cmd;
+}
+
+/**
+ * Extract workspace-specific info from project context that is not in project CLAUDE.md.
+ * Project CLAUDE.md already covers: name, description, tech stack, team, standards.
+ * This extracts: workplace directory, workspace pointers.
+ */
+function extractWorkspaceInfo(projectContext: string): string {
+  const lines = projectContext.split("\n");
+  const relevant: string[] = [];
+  let capturing = false;
+
+  for (const line of lines) {
+    if (line.startsWith("### Active Workplace:") ||
+        line.startsWith("Directory:") ||
+        line.startsWith("Use this workplace") ||
+        line.startsWith("### Stable Workspace Pointers:")) {
+      relevant.push(line);
+      capturing = true;
+    } else if (capturing && line.startsWith("###")) {
+      capturing = false;
+    }
+  }
+
+  return relevant.length > 0 ? relevant.join("\n") : "";
 }
 
 // PUT /agents/:name/config - Set model and effort (author only)

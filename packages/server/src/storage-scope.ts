@@ -119,7 +119,7 @@ export function ensureDefaultWorkplace(projectId: string): WorkplaceRow {
   const now = Date.now();
   const id = crypto.randomUUID();
   const slug = "default";
-  const directory = path.join(project.directory || path.join(DATA_DIR, "projects", project.slug), "workplaces", slug);
+  const directory = path.join(project.directory, ".claude-crew", "workplaces", slug);
   fs.mkdirSync(directory, { recursive: true });
 
   db.prepare(`

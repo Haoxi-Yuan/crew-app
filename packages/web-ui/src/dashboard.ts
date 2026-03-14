@@ -236,18 +236,98 @@ function openCreateProjectModal(): void {
 
   title.textContent = "New Project";
   body.innerHTML = `
-    <div class="form-group"><label>Name</label><input id="f-proj-name" type="text" placeholder="My Project"></div>
+    <div class="form-group">
+      <label>Directory</label>
+      <div style="display:flex;gap:6px">
+        <input id="f-proj-dir" type="text" placeholder="/path/to/your/project" style="flex:1">
+        <button type="button" id="f-proj-browse" class="modal-action-btn" style="white-space:nowrap;padding:6px 12px">Browse</button>
+      </div>
+    </div>
+    <div class="form-group"><label>Name</label><input id="f-proj-name" type="text" placeholder="Auto-filled from directory name"></div>
     <div class="form-group"><label>Description</label><textarea id="f-proj-desc" rows="3" placeholder="What is this project about?"></textarea></div>
-    <div class="form-group"><label>Tech Stack (comma separated)</label><input id="f-proj-tech" type="text" placeholder="TypeScript, React, PostgreSQL"></div>
+    <div class="form-group">
+      <label>Tech Stack (comma separated)</label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input id="f-proj-tech" type="text" placeholder="Auto-detected from project files" style="flex:1">
+        <span id="f-proj-tech-status" style="font-size:11px;color:var(--text-secondary,#969696)"></span>
+      </div>
+    </div>
     <button class="modal-action-btn" id="f-proj-create">Create Project</button>
   `;
   overlay.classList.remove("hidden");
 
+  const dirInput = document.getElementById("f-proj-dir") as HTMLInputElement;
+  const nameInput = document.getElementById("f-proj-name") as HTMLInputElement;
+  const techInput = document.getElementById("f-proj-tech") as HTMLInputElement;
+  const techStatus = document.getElementById("f-proj-tech-status")!;
+
+  // Auto-fill name and detect tech stack when directory changes
+  async function onDirectoryChanged(dir: string): Promise<void> {
+    if (!dir) return;
+    // Auto-fill name from directory basename
+    const basename = dir.split("/").pop() || dir.split("\\").pop() || "";
+    if (basename && !nameInput.value.trim()) {
+      nameInput.value = basename;
+    }
+    // Auto-detect tech stack
+    techStatus.textContent = "Detecting...";
+    try {
+      const r = await fetch("/api/system/detect-tech-stack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ directory: dir }),
+      });
+      if (r.ok) {
+        const data = await r.json() as { tech_stack: string[] };
+        if (data.tech_stack.length > 0) {
+          techInput.value = data.tech_stack.join(", ");
+          techStatus.textContent = `${data.tech_stack.length} detected`;
+        } else {
+          techStatus.textContent = "No frameworks detected";
+        }
+      } else {
+        techStatus.textContent = "";
+      }
+    } catch {
+      techStatus.textContent = "";
+    }
+  }
+
+  // Browse button: open native folder picker
+  document.getElementById("f-proj-browse")!.addEventListener("click", async () => {
+    try {
+      const r = await fetch("/api/system/pick-directory");
+      const data = await r.json() as { directory: string | null };
+      if (data.directory) {
+        dirInput.value = data.directory;
+        await onDirectoryChanged(data.directory);
+      }
+    } catch {
+      alert("Failed to open folder picker");
+    }
+  });
+
+  // Also detect when user manually types/pastes a path
+  let dirDebounce: ReturnType<typeof setTimeout>;
+  dirInput.addEventListener("input", () => {
+    clearTimeout(dirDebounce);
+    dirDebounce = setTimeout(() => {
+      const dir = dirInput.value.trim();
+      if (dir && dir.startsWith("/")) {
+        onDirectoryChanged(dir);
+      }
+    }, 500);
+  });
+
   document.getElementById("f-proj-create")!.addEventListener("click", async () => {
-    const name = (document.getElementById("f-proj-name") as HTMLInputElement).value.trim();
-    if (!name) return;
+    const directory = dirInput.value.trim();
+    if (!directory) {
+      alert("Please select a project directory");
+      return;
+    }
+    const name = nameInput.value.trim();
     const description = (document.getElementById("f-proj-desc") as HTMLTextAreaElement).value.trim();
-    const techStr = (document.getElementById("f-proj-tech") as HTMLInputElement).value.trim();
+    const techStr = techInput.value.trim();
     const tech_stack = techStr ? techStr.split(",").map((s) => s.trim()).filter(Boolean) : [];
 
     const btn = document.getElementById("f-proj-create") as HTMLButtonElement;
@@ -258,7 +338,7 @@ function openCreateProjectModal(): void {
       const r = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description, tech_stack }),
+        body: JSON.stringify({ directory, name: name || undefined, description, tech_stack }),
       });
       if (!r.ok) {
         const data = await r.json();
@@ -340,45 +420,187 @@ function openEditProjectModal(project: Project): void {
   });
 }
 
-function openAssignAgentModal(projectId: string): void {
+interface AgentWorkspace {
+  name: string;
+  role: string;
+  provider: string;
+}
+
+async function openAssignAgentModal(projectId: string): Promise<void> {
   const overlay = document.getElementById("modal-overlay")!;
   const title = document.getElementById("modal-title")!;
   const body = document.getElementById("modal-body")!;
 
   title.textContent = "Assign Agent";
-  body.innerHTML = `
-    <div class="form-group"><label>Agent Name</label><input id="f-assign-name" type="text" placeholder="coder"></div>
-    <div class="form-group"><label>Role in Project</label><input id="f-assign-role" type="text" placeholder="Backend developer"></div>
-    <div class="form-group">
-      <label>Assignment Type</label>
-      <select id="f-assign-type">
-        <option value="dedicated">Dedicated</option>
-        <option value="shared">Shared</option>
-      </select>
-    </div>
-    <button class="modal-action-btn" id="f-assign-submit">Assign</button>
-  `;
+  body.innerHTML = `<div class="text-secondary">Loading agents...</div>`;
   overlay.classList.remove("hidden");
 
+  let allAgents: AgentWorkspace[] = [];
+  let assignedNames: string[] = [];
+  try {
+    allAgents = await (await fetch("/api/workspaces")).json();
+    const projectDetail = await (await fetch(`/api/projects/${projectId}`)).json();
+    assignedNames = (projectDetail.agents || []).map((a: ProjectAgent) => a.agent_name);
+  } catch {
+    body.innerHTML = `<div class="text-secondary">Failed to load agents.</div>`;
+    return;
+  }
+
+  const availableAgents = allAgents.filter((a) => !assignedNames.includes(a.name));
+
+  const agentListHtml = availableAgents.length > 0
+    ? availableAgents.map((a) => `
+        <div class="assign-agent-item" data-agent-name="${esc(a.name)}" data-agent-role="${esc(a.role)}">
+          <div class="assign-agent-name">${esc(a.name)}</div>
+          <div class="assign-agent-role">${esc(a.role || "No role defined")}</div>
+          <div class="assign-agent-provider">${esc(a.provider)}</div>
+        </div>
+      `).join("")
+    : `<div class="text-secondary">All agents are already assigned to this project.</div>`;
+
+  body.innerHTML = `
+    <div class="assign-tabs">
+      <button class="assign-tab active" data-tab="existing">Add Existing</button>
+      <button class="assign-tab" data-tab="new">Create New</button>
+    </div>
+
+    <div id="assign-tab-existing" class="assign-tab-content">
+      <div class="assign-agent-list">${agentListHtml}</div>
+      <div id="assign-existing-form" class="hidden">
+        <div class="assign-selected-info">
+          Selected: <strong id="assign-selected-name"></strong>
+        </div>
+        <div class="form-group"><label>Role in Project</label><input id="f-assign-role" type="text" placeholder="Override role for this project (optional)"></div>
+        <div class="form-group">
+          <label>Assignment Type</label>
+          <select id="f-assign-type">
+            <option value="dedicated">Dedicated</option>
+            <option value="shared">Shared</option>
+          </select>
+        </div>
+        <button class="modal-action-btn" id="f-assign-submit">Assign to Project</button>
+      </div>
+    </div>
+
+    <div id="assign-tab-new" class="assign-tab-content hidden">
+      <div class="form-group"><label>Agent Name</label><input id="f-new-name" type="text" placeholder="my-agent"></div>
+      <div class="form-group"><label>Role</label><input id="f-new-role" type="text" placeholder="Backend developer"></div>
+      <div class="form-group">
+        <label>Assignment Type</label>
+        <select id="f-new-type">
+          <option value="dedicated">Dedicated</option>
+          <option value="shared">Shared</option>
+        </select>
+      </div>
+      <label class="toggle-label"><input type="checkbox" id="f-new-wake" checked> Wake agent after creation</label>
+      <button class="modal-action-btn" id="f-new-submit">Create & Assign</button>
+    </div>
+  `;
+
+  // Tab switching
+  body.querySelectorAll(".assign-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      body.querySelectorAll(".assign-tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      const tabName = (tab as HTMLElement).dataset.tab!;
+      document.getElementById("assign-tab-existing")!.classList.toggle("hidden", tabName !== "existing");
+      document.getElementById("assign-tab-new")!.classList.toggle("hidden", tabName !== "new");
+    });
+  });
+
+  // Existing agent selection
+  let selectedAgent: string | null = null;
+  body.querySelectorAll(".assign-agent-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      body.querySelectorAll(".assign-agent-item").forEach((i) => i.classList.remove("selected"));
+      item.classList.add("selected");
+      selectedAgent = (item as HTMLElement).dataset.agentName!;
+      const agentRole = (item as HTMLElement).dataset.agentRole || "";
+
+      document.getElementById("assign-existing-form")!.classList.remove("hidden");
+      document.getElementById("assign-selected-name")!.textContent = selectedAgent;
+      (document.getElementById("f-assign-role") as HTMLInputElement).value = agentRole;
+      (document.getElementById("f-assign-role") as HTMLInputElement).placeholder = agentRole || "Role in this project";
+    });
+  });
+
+  // Submit: assign existing agent
   document.getElementById("f-assign-submit")!.addEventListener("click", async () => {
-    const agent_name = (document.getElementById("f-assign-name") as HTMLInputElement).value.trim();
-    if (!agent_name) return;
+    if (!selectedAgent) return;
     const role_in_project = (document.getElementById("f-assign-role") as HTMLInputElement).value.trim();
     const assignment_type = (document.getElementById("f-assign-type") as HTMLSelectElement).value;
+
+    const btn = document.getElementById("f-assign-submit") as HTMLButtonElement;
+    btn.disabled = true;
+    btn.textContent = "Assigning...";
 
     try {
       const r = await fetch(`/api/projects/${projectId}/agents`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_name, role_in_project, assignment_type }),
+        body: JSON.stringify({ agent_name: selectedAgent, role_in_project, assignment_type }),
       });
       if (!r.ok) {
         const data = await r.json();
         alert(data.error || "Failed to assign agent");
+        btn.disabled = false;
+        btn.textContent = "Assign to Project";
         return;
       }
     } catch (err) {
       alert("Failed: " + (err as Error).message);
+      btn.disabled = false;
+      btn.textContent = "Assign to Project";
+      return;
+    }
+
+    overlay.classList.add("hidden");
+    await loadProjects();
+    renderProjectDetail(projectId);
+  });
+
+  // Submit: create new agent and assign
+  document.getElementById("f-new-submit")!.addEventListener("click", async () => {
+    const name = (document.getElementById("f-new-name") as HTMLInputElement).value.trim();
+    if (!name) { alert("Agent name is required"); return; }
+    const role = (document.getElementById("f-new-role") as HTMLInputElement).value.trim();
+    const assignment_type = (document.getElementById("f-new-type") as HTMLSelectElement).value;
+    const wake = (document.getElementById("f-new-wake") as HTMLInputElement).checked;
+
+    const btn = document.getElementById("f-new-submit") as HTMLButtonElement;
+    btn.disabled = true;
+    btn.textContent = "Creating...";
+
+    try {
+      const createResp = await fetch("/api/agents/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, role, wake }),
+      });
+      if (!createResp.ok) {
+        const data = await createResp.json();
+        alert(data.error || "Failed to create agent");
+        btn.disabled = false;
+        btn.textContent = "Create & Assign";
+        return;
+      }
+
+      const assignResp = await fetch(`/api/projects/${projectId}/agents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_name: name, role_in_project: role, assignment_type }),
+      });
+      if (!assignResp.ok) {
+        const data = await assignResp.json();
+        alert(data.error || "Failed to assign agent to project");
+        btn.disabled = false;
+        btn.textContent = "Create & Assign";
+        return;
+      }
+    } catch (err) {
+      alert("Failed: " + (err as Error).message);
+      btn.disabled = false;
+      btn.textContent = "Create & Assign";
       return;
     }
 

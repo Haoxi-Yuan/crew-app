@@ -1,0 +1,21 @@
+{
+  "agent_name": "author",
+  "agent_dir": "/Users/yuan/Projects/claude-crew/agents/author",
+  "project": {
+    "id": "c437d4f9-cbda-4169-883c-2f7a3fb9a7cb",
+    "name": "SKILLS-CREATOR",
+    "slug": "skills-creator",
+    "directory": "/Volumes/Data/SKILLS-CREATOR"
+  },
+  "workplace": {
+    "id": "b6b0d665-df5f-4c9d-b6ad-fb5300ce8ed1",
+    "name": "Default Workplace",
+    "slug": "default",
+    "directory": "/Volumes/Data/SKILLS-CREATOR/.claude-crew/workplaces/default",
+    "kind": "derived"
+  },
+  "pointers": {
+    "current_project": "/Users/yuan/Projects/claude-crew/agents/author/.crew/current-project",
+    "current_workplace": "/Users/yuan/Projects/claude-crew/agents/author/.crew/current-workplace"
+  }
+}

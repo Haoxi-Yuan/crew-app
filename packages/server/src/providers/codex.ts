@@ -656,22 +656,21 @@ async function ensureSession(agentName: string): Promise<CodexSession> {
 
 export async function sendMessageToCodexAgent(
   agentName: string,
-  senderName: string,
-  content: string,
+  senderNameOrInput: string,
+  content?: string,
   channelId?: string,
   channelType?: string
 ): Promise<boolean> {
   try {
     const session = await ensureSession(agentName);
     const runtime = getAgentRuntimeConfig(agentName);
-    let inputText: string;
-    if (channelType === "dm") {
-      inputText = `[${senderName} in DM]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`;
-    } else if (channelType === "group") {
-      inputText = `[${senderName} in group "${channelId}"]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`;
-    } else {
-      inputText = `[${senderName} in #${channelId}]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`;
-    }
+    const inputText = content === undefined
+      ? senderNameOrInput
+      : channelType === "dm"
+        ? `[${senderNameOrInput} in DM]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`
+        : channelType === "group"
+          ? `[${senderNameOrInput} in group "${channelId}"]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`
+          : `[${senderNameOrInput} in #${channelId}]: ${content}\n(Reply using send_to_chat with channel="${channelId}")`;
 
     const userInput = [{ type: "text", text: inputText, text_elements: [] }];
     if (session.activeTurnId) {

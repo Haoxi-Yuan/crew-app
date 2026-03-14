@@ -5,7 +5,8 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm --filter @claude-crew/server dev",
-    "validate:productization": "node ./scripts/validate-memory-productization.mjs"
+    "validate:productization": "./scripts/run-with-compatible-node.sh ./scripts/validate-memory-productization.mjs",
+    "validate:chat-context-cwd": "./scripts/run-with-compatible-node.sh ./scripts/validate-chat-context-cwd.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

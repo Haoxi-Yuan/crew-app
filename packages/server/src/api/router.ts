@@ -262,6 +262,142 @@ router.get("/workspaces", (_req: Request, res: Response) => {
   res.json(result);
 });
 
+// Pick directory via native OS dialog
+router.get("/system/pick-directory", (_req: Request, res: Response) => {
+  const platform = process.platform;
+  if (platform === "darwin") {
+    execFile("osascript", ["-e", 'POSIX path of (choose folder with prompt "Select project directory")'], (err, stdout) => {
+      if (err) {
+        // User cancelled or osascript error
+        res.json({ directory: null });
+        return;
+      }
+      const dir = stdout.trim().replace(/\/$/, "");
+      res.json({ directory: dir || null });
+    });
+  } else if (platform === "linux") {
+    execFile("zenity", ["--file-selection", "--directory", "--title=Select project directory"], (err, stdout) => {
+      if (err) {
+        res.json({ directory: null });
+        return;
+      }
+      res.json({ directory: stdout.trim() || null });
+    });
+  } else {
+    // Windows: PowerShell folder browser
+    const psScript = `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select project directory'; if ($f.ShowDialog() -eq 'OK') { $f.SelectedPath } else { '' }`;
+    execFile("powershell", ["-NoProfile", "-Command", psScript], (err, stdout) => {
+      if (err) {
+        res.json({ directory: null });
+        return;
+      }
+      res.json({ directory: stdout.trim() || null });
+    });
+  }
+});
+
+// Detect tech stack from project directory
+router.post("/system/detect-tech-stack", (req: Request, res: Response) => {
+  const { directory } = req.body as { directory?: string };
+  if (!directory || typeof directory !== "string") {
+    res.status(400).json({ error: "directory is required" });
+    return;
+  }
+  if (!path.isAbsolute(directory)) {
+    res.status(400).json({ error: "directory must be an absolute path" });
+    return;
+  }
+  if (!fs.existsSync(directory)) {
+    res.status(400).json({ error: "directory does not exist" });
+    return;
+  }
+
+  const techStack: string[] = [];
+
+  // TypeScript
+  if (fs.existsSync(path.join(directory, "tsconfig.json"))) {
+    techStack.push("TypeScript");
+  }
+
+  // package.json - extract frameworks from dependencies
+  const pkgPath = path.join(directory, "package.json");
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+      const depMap: Record<string, string> = {
+        "react": "React", "next": "Next.js", "vue": "Vue",
+        "nuxt": "Nuxt", "svelte": "Svelte", "angular": "Angular",
+        "express": "Express", "fastify": "Fastify", "koa": "Koa",
+        "tailwindcss": "Tailwind CSS", "prisma": "Prisma",
+        "drizzle-orm": "Drizzle", "mongoose": "MongoDB",
+        "pg": "PostgreSQL", "better-sqlite3": "SQLite",
+        "vite": "Vite", "webpack": "Webpack", "esbuild": "esbuild",
+        "jest": "Jest", "vitest": "Vitest", "mocha": "Mocha",
+        "electron": "Electron",
+      };
+      for (const [dep, label] of Object.entries(depMap)) {
+        if (allDeps[dep] && !techStack.includes(label)) {
+          techStack.push(label);
+        }
+      }
+      if (!techStack.includes("TypeScript") && !fs.existsSync(path.join(directory, "tsconfig.json"))) {
+        if (Object.keys(allDeps).length > 0 && !techStack.some(t => t === "TypeScript")) {
+          techStack.push("JavaScript");
+        }
+      }
+    } catch {}
+  }
+
+  // Rust
+  if (fs.existsSync(path.join(directory, "Cargo.toml"))) {
+    techStack.push("Rust");
+  }
+
+  // Go
+  if (fs.existsSync(path.join(directory, "go.mod"))) {
+    techStack.push("Go");
+  }
+
+  // Python
+  if (fs.existsSync(path.join(directory, "pyproject.toml")) ||
+      fs.existsSync(path.join(directory, "requirements.txt")) ||
+      fs.existsSync(path.join(directory, "setup.py"))) {
+    techStack.push("Python");
+  }
+
+  // Ruby
+  if (fs.existsSync(path.join(directory, "Gemfile"))) {
+    techStack.push("Ruby");
+  }
+
+  // Java
+  if (fs.existsSync(path.join(directory, "pom.xml")) ||
+      fs.existsSync(path.join(directory, "build.gradle")) ||
+      fs.existsSync(path.join(directory, "build.gradle.kts"))) {
+    techStack.push("Java");
+  }
+
+  // Swift
+  if (fs.existsSync(path.join(directory, "Package.swift"))) {
+    techStack.push("Swift");
+  }
+
+  // Docker
+  if (fs.existsSync(path.join(directory, "Dockerfile")) ||
+      fs.existsSync(path.join(directory, "docker-compose.yml")) ||
+      fs.existsSync(path.join(directory, "docker-compose.yaml"))) {
+    techStack.push("Docker");
+  }
+
+  // GitHub Actions
+  if (fs.existsSync(path.join(directory, ".github", "workflows"))) {
+    techStack.push("GitHub Actions");
+  }
+
+  res.json({ tech_stack: techStack });
+});
+
 router.get("/status", (_req: Request, res: Response) => {
   const db = getDb();
   const agentCount = db

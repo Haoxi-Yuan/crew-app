@@ -412,7 +412,7 @@ document.getElementById("add-channel-btn")!.addEventListener("click", () => {
     await fetch("/api/channels", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, description: desc, type, members: members.length > 0 ? members : undefined }),
+      body: JSON.stringify({ name, description: desc, type, members: members.length > 0 ? members : undefined, project_id: getActiveProjectId() || undefined }),
     });
     closeModal();
     await loadChannels();
@@ -1059,7 +1059,7 @@ document.querySelectorAll(".view-tab").forEach((tab) => {
 });
 
 // --- Init ---
-initInput(sendMessage, () => agents);
+initInput(sendMessage, () => agents, () => getActiveProjectId());
 initDashboard();
 loadSidebarProjects();
 loadChannels();

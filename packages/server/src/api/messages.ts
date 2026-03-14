@@ -27,7 +27,7 @@ router.post("/", (req: Request, res: Response) => {
 
   // Parse explicit @mentions from content
   const rawMentions = parseMentions(content);
-  const expandedMentions = expandMentions(rawMentions);
+  const expandedMentions = expandMentions(rawMentions, cid);
   const mentionsJson = JSON.stringify(expandedMentions);
 
   // Check channel type for auto-forwarding (DM/group)
@@ -139,6 +139,48 @@ router.get("/", (req: Request, res: Response) => {
       delivery_status: deliveryStatus,
     };
   });
+
+  res.json(parsed);
+});
+
+// GET /messages/search - keyword search through chat history
+router.get("/search", (req: Request, res: Response) => {
+  const query = (req.query.query as string) || "";
+  const channelId = req.query.channel_id as string | undefined;
+  const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+
+  if (!query) {
+    res.status(400).json({ error: "query parameter is required" });
+    return;
+  }
+
+  const db = getDb();
+  const pattern = `%${query}%`;
+
+  let messages: MessageRow[];
+  if (channelId) {
+    messages = db
+      .prepare(
+        "SELECT * FROM messages WHERE channel_id = ? AND content LIKE ? ORDER BY id DESC LIMIT ?"
+      )
+      .all(channelId, pattern, limit) as MessageRow[];
+  } else {
+    messages = db
+      .prepare(
+        "SELECT * FROM messages WHERE content LIKE ? ORDER BY id DESC LIMIT ?"
+      )
+      .all(pattern, limit) as MessageRow[];
+  }
+
+  messages.reverse();
+
+  const parsed = messages.map((m) => ({
+    id: m.id,
+    channel_id: m.channel_id,
+    sender_name: m.sender_name,
+    content: m.content,
+    created_at: m.created_at,
+  }));
 
   res.json(parsed);
 });

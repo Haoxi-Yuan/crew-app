@@ -69,17 +69,24 @@ server.tool(
 // Tool: read_chat
 server.tool(
   "read_chat",
-  "Read group chat messages. Use after_id to fetch only new messages since your last read (saves context).",
+  "Read group chat messages. Use after_id to fetch only new messages since your last read (saves context). Use query to filter messages by keyword.",
   {
     limit: z.number().optional().describe("Number of messages to fetch (default 10, max 200)"),
     after_id: z.number().optional().describe("Only return messages with id > after_id (incremental read)"),
     channel: z.string().optional().describe("Channel ID to read from (default: general)"),
+    query: z.string().optional().describe("Keyword to filter messages (searches message content)"),
   },
-  async ({ limit, after_id, channel }) => {
+  async ({ limit, after_id, channel, query }) => {
     try {
-      const messages = await client.readChat(limit || 10, undefined, channel, after_id);
+      let messages;
+      if (query) {
+        // Use search endpoint when query is provided
+        messages = await client.searchChat(query, channel, limit || 20);
+      } else {
+        messages = await client.readChat(limit || 10, undefined, channel, after_id);
+      }
       if (messages.length === 0) {
-        const hint = after_id ? " since id " + after_id : "";
+        const hint = query ? ` matching "${query}"` : after_id ? " since id " + after_id : "";
         return { content: [{ type: "text", text: `No messages${hint}.` }] };
       }
       const fmtTime = (ts: number) => {
@@ -90,7 +97,47 @@ server.tool(
         .map((m) => `#${m.id} [${m.sender_name} ${fmtTime(m.created_at)}]: ${m.content}`)
         .join("\n");
       const lastId = messages[messages.length - 1].id;
-      return { content: [{ type: "text", text: `${text}\n\n(last_id=${lastId}, use after_id=${lastId} next time to read only newer messages)` }] };
+      const suffix = query
+        ? `\n\n(${messages.length} results for "${query}")`
+        : `\n\n(last_id=${lastId}, use after_id=${lastId} next time to read only newer messages)`;
+      return { content: [{ type: "text", text: `${text}${suffix}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: search_chat
+server.tool(
+  "search_chat",
+  "Search chat history by keyword. Use this to quickly find relevant context in long conversations.",
+  {
+    query: z.string().describe("Keyword to search for in message content"),
+    channel: z.string().optional().describe("Channel ID to search in (omit to search all channels)"),
+    limit: z.number().optional().describe("Max results to return (default 20, max 100)"),
+  },
+  async ({ query, channel, limit }) => {
+    try {
+      const maxResults = limit || 20;
+      const messages = await client.searchChat(query, channel, maxResults);
+      if (messages.length === 0) {
+        return { content: [{ type: "text", text: `No messages matching "${query}".` }] };
+      }
+      const fmtTime = (ts: number) => {
+        const d = new Date(ts);
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      };
+      const text = messages
+        .map((m) => {
+          const cid = "channel_id" in m ? (m as unknown as { channel_id: string }).channel_id : "";
+          const channelTag = cid ? ` (#${cid})` : "";
+          return `#${m.id} [${m.sender_name} ${fmtTime(m.created_at)}]${channelTag}: ${m.content}`;
+        })
+        .join("\n");
+      return { content: [{ type: "text", text: `${messages.length} results for "${query}":\n${text}` }] };
     } catch (err) {
       return {
         content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
