@@ -12,8 +12,9 @@ import { getAvatarColor, escapeHtml, contextBorderGradient, showConfirm } from "
 import { initDashboard, handleProjectWsEvent } from "./dashboard.js";
 import { getActiveProjectId, setActiveProject, onActiveProjectChange } from "./project-context.js";
 import type { Project } from "./project-types.js";
+import { api, ApiError, getWsClient } from "./transport.js";
+import { getSavedState, saveChannel, saveProject, saveView, saveSidebarWidth } from "./state.js";
 
-let ws: WebSocket | null = null;
 let agents: Agent[] = [];
 let channels: Channel[] = [];
 let currentChannelId = "general";
@@ -42,11 +43,7 @@ const sidebar = document.getElementById("sidebar")!;
 // --- Approval Handler ---
 setApprovalHandler(async (agentName: string, key: string) => {
   try {
-    await fetch(`/api/approvals/${encodeURIComponent(agentName)}/respond`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key }),
-    });
+    await api.post(`/api/approvals/${encodeURIComponent(agentName)}/respond`, { key });
   } catch (err) {
     console.error("Approval response failed:", err);
   }
@@ -58,29 +55,21 @@ setPeakHandlers({
     try {
       const body: Record<string, unknown> = { option_index: optionIndex, decided_by: "user" };
       if (note) body.note = note;
-      await fetch(`/api/peaks/${encodeURIComponent(peakId)}/decide`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      await api.post(`/api/peaks/${encodeURIComponent(peakId)}/decide`, body);
     } catch (err) {
       console.error("Peak decide failed:", err);
     }
   },
   onLetAgentDecide: async (peakId: string) => {
     try {
-      await fetch(`/api/peaks/${encodeURIComponent(peakId)}/let-agent-decide`, {
-        method: "POST",
-      });
+      await api.post(`/api/peaks/${encodeURIComponent(peakId)}/let-agent-decide`);
     } catch (err) {
       console.error("Peak let-agent-decide failed:", err);
     }
   },
   onPause: async (peakId: string) => {
     try {
-      await fetch(`/api/peaks/${encodeURIComponent(peakId)}/pause`, {
-        method: "POST",
-      });
+      await api.post(`/api/peaks/${encodeURIComponent(peakId)}/pause`);
     } catch (err) {
       console.error("Peak pause failed:", err);
     }
@@ -90,7 +79,7 @@ setPeakHandlers({
 // Load pending peaks on channel switch
 async function loadPendingPeaks(): Promise<void> {
   try {
-    const peaks: PeakData[] = await (await fetch("/api/peaks/pending")).json();
+    const peaks = await api.get<PeakData[]>("/api/peaks/pending");
     for (const peak of peaks) {
       renderPeakCard(peak);
     }
@@ -114,12 +103,12 @@ contextMenu.addEventListener("click", async (e) => {
   const action = (e.target as HTMLElement).dataset.action;
   if (!action || !ctxTargetChannelId) return;
   if (action === "archive") {
-    await fetch(`/api/channels/${ctxTargetChannelId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "archived" }) });
+    await api.put(`/api/channels/${ctxTargetChannelId}`, { status: "archived" });
   } else if (action === "unarchive") {
-    await fetch(`/api/channels/${ctxTargetChannelId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "active" }) });
+    await api.put(`/api/channels/${ctxTargetChannelId}`, { status: "active" });
   } else if (action === "delete") {
     if (await showConfirm("Delete this channel and all its messages?")) {
-      await fetch(`/api/channels/${ctxTargetChannelId}`, { method: "DELETE" });
+      await api.del(`/api/channels/${ctxTargetChannelId}`);
       if (currentChannelId === ctxTargetChannelId) switchChannel("general");
     }
   }
@@ -161,6 +150,7 @@ if (resizeHandle) {
       dragging = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      saveSidebarWidth(sidebar.offsetWidth);
     }
   });
 }
@@ -190,7 +180,7 @@ async function loadChannels(): Promise<void> {
   if (!showArchived) params.set("status", "active");
   if (projectId) params.set("project_id", projectId);
   const qs = params.toString();
-  channels = await (await fetch(`/api/channels${qs ? "?" + qs : ""}`)).json();
+  channels = await api.get<Channel[]>(`/api/channels${qs ? "?" + qs : ""}`);
   renderChannels();
 }
 
@@ -262,6 +252,7 @@ function makeChannelLi(ch: Channel, innerHtml: string): HTMLLIElement {
 
 async function switchChannel(id: string): Promise<void> {
   currentChannelId = id;
+  saveChannel(id);
   // Clear unread for this channel
   unreadCounts.delete(id);
 
@@ -298,7 +289,7 @@ async function switchChannel(id: string): Promise<void> {
   }
 
   renderChannels();
-  const msgs: Message[] = await (await fetch(`/api/messages?channel_id=${id}&limit=50`)).json();
+  const msgs = await api.get<Message[]>(`/api/messages?channel_id=${id}&limit=50`);
   renderMessages(msgs);
   loadPendingApprovals();
   loadPendingPeaks();
@@ -306,8 +297,7 @@ async function switchChannel(id: string): Promise<void> {
 
 async function fetchTerminalContent(agentName: string): Promise<void> {
   try {
-    const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/terminal`);
-    const data = await r.json();
+    const data = await api.get<{ content?: string }>(`/api/agents/${encodeURIComponent(agentName)}/terminal`);
     if (data.content) {
       updateTerminalContent(data.content);
     }
@@ -317,8 +307,7 @@ async function fetchTerminalContent(agentName: string): Promise<void> {
 // --- DM Channel ---
 async function openDmChannel(agentName: string): Promise<void> {
   try {
-    const r = await fetch(`/api/channels/dm/${encodeURIComponent(agentName)}`, { method: "POST" });
-    const ch: Channel = await r.json();
+    const ch = await api.post<Channel>(`/api/channels/dm/${encodeURIComponent(agentName)}`);
     if (!channels.find(c => c.id === ch.id)) {
       channels.push(ch);
     }
@@ -357,7 +346,7 @@ function openGroupMemberModal(ch: Channel): void {
     btn.addEventListener("click", async () => {
       const name = (btn as HTMLElement).dataset.name!;
       if (!await showConfirm(`Remove ${name} from the group?`)) return;
-      await fetch(`/api/channels/${ch.id}/members/${encodeURIComponent(name)}`, { method: "DELETE" });
+      await api.del(`/api/channels/${ch.id}/members/${encodeURIComponent(name)}`);
       await loadChannels();
       const updated = channels.find(c => c.id === ch.id);
       if (updated) openGroupMemberModal(updated);
@@ -370,11 +359,7 @@ function openGroupMemberModal(ch: Channel): void {
     const sel = document.getElementById("f-add-member") as HTMLSelectElement;
     const name = sel.value;
     if (!name) return;
-    await fetch(`/api/channels/${ch.id}/members`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
+    await api.post(`/api/channels/${ch.id}/members`, { name });
     await loadChannels();
     const updated = channels.find(c => c.id === ch.id);
     if (updated) openGroupMemberModal(updated);
@@ -411,11 +396,7 @@ document.getElementById("add-channel-btn")!.addEventListener("click", () => {
     if (type === "group") {
       document.querySelectorAll<HTMLInputElement>(".f-ch-member:checked").forEach(cb => members.push(cb.value));
     }
-    await fetch("/api/channels", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, description: desc, type, members: members.length > 0 ? members : undefined, project_id: getActiveProjectId() || undefined }),
-    });
+    await api.post("/api/channels", { name, description: desc, type, members: members.length > 0 ? members : undefined, project_id: getActiveProjectId() || undefined });
     closeModal();
     await loadChannels();
   });
@@ -430,7 +411,7 @@ document.getElementById("show-archived")!.addEventListener("change", (e) => {
 async function loadAgents(): Promise<void> {
   const projectId = getActiveProjectId();
   const url = projectId ? `/api/agents?project_id=${encodeURIComponent(projectId)}` : "/api/agents";
-  agents = await (await fetch(url)).json();
+  agents = await api.get<Agent[]>(url);
   renderAgents();
 }
 
@@ -509,9 +490,9 @@ function openAgentEdit(ag: Agent): void {
   document.getElementById("f-ag-save")!.addEventListener("click", async () => {
     const role = (document.getElementById("f-ag-role") as HTMLInputElement).value.trim();
     try {
-      await fetch(`/api/agents/${encodedName}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
+      await api.put(`/api/agents/${encodedName}`, { role });
     } catch (err) {
-      alert("Save failed: " + (err as Error).message);
+      alert("Save failed: " + (err instanceof ApiError ? err.errorMessage : (err as Error).message));
       return;
     }
     closeModal();
@@ -520,14 +501,9 @@ function openAgentEdit(ag: Agent): void {
   document.getElementById("f-ag-del")!.addEventListener("click", async () => {
     if (!await showConfirm(`Delete agent "${ag.name}"? This will stop its tmux session, kill bridge processes, and delete its workspace.`)) return;
     try {
-      const r = await fetch(`/api/agents/${encodedName}`, { method: "DELETE" });
-      if (!r.ok) {
-        const text = await r.text();
-        try { alert(JSON.parse(text).error || "Failed to delete agent"); } catch { alert("Failed to delete agent: " + text); }
-        return;
-      }
+      await api.del(`/api/agents/${encodedName}`);
     } catch (err) {
-      alert("Delete failed: " + (err as Error).message);
+      alert("Delete failed: " + (err instanceof ApiError ? err.errorMessage : (err as Error).message));
       return;
     }
     closeModal();
@@ -572,33 +548,17 @@ document.getElementById("add-agent-btn")!.addEventListener("click", () => {
     btn.disabled = true;
     btn.textContent = "Creating...";
     try {
-      const r = await fetch("/api/agents/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, provider, role, wake }),
-      });
-      const data = await r.json();
-      if (!r.ok) {
-        alert(data.error || "Failed to create agent");
-        btn.disabled = false;
-        btn.textContent = "Create";
-        return;
-      }
+      const data = await api.post<{ wakeError?: string }>("/api/agents/create", { name, provider, role, wake });
       if (data.wakeError) {
         alert(`Agent created but failed to start: ${data.wakeError}`);
       }
-      // Assign to project if selected
       if (projectId) {
         try {
-          await fetch(`/api/projects/${projectId}/agents`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ agent_name: name, role_in_project: role, assignment_type: "dedicated" }),
-          });
+          await api.post(`/api/projects/${projectId}/agents`, { agent_name: name, role_in_project: role, assignment_type: "dedicated" });
         } catch { /* ignore assignment failure */ }
       }
     } catch (err) {
-      alert("Failed: " + (err as Error).message);
+      alert(err instanceof ApiError ? err.errorMessage : "Failed: " + (err as Error).message);
       btn.disabled = false;
       btn.textContent = "Create";
       return;
@@ -611,37 +571,26 @@ document.getElementById("add-agent-btn")!.addEventListener("click", () => {
 // --- Wake Agents ---
 async function wakeAgent(name: string): Promise<void> {
   try {
-    const r = await fetch("/api/wake", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    const data = await r.json();
-    if (!r.ok) alert(data.error || "Failed to wake agent");
+    await api.post("/api/wake", { name });
   } catch (err) {
-    alert("Failed to wake agent: " + (err as Error).message);
+    alert("Failed to wake agent: " + (err instanceof ApiError ? err.errorMessage : (err as Error).message));
   }
 }
 
 document.getElementById("wake-all-btn")!.addEventListener("click", async () => {
   if (!await showConfirm("Wake all agents? This will open Terminal tabs for each agent.")) return;
   try {
-    const r = await fetch("/api/wake-all", { method: "POST" });
-    const data = await r.json();
-    if (r.ok) {
-      alert(`Launched ${data.launched} agent(s)`);
-    } else {
-      alert(data.error || "Failed to wake agents");
-    }
+    const data = await api.post<{ launched: number }>("/api/wake-all");
+    alert(`Launched ${data.launched} agent(s)`);
   } catch (err) {
-    alert("Failed: " + (err as Error).message);
+    alert("Failed: " + (err instanceof ApiError ? err.errorMessage : (err as Error).message));
   }
 });
 
 // --- Pending Approvals ---
 async function loadPendingApprovals(): Promise<void> {
   try {
-    const approvals: ToolApproval[] = await (await fetch("/api/approvals")).json();
+    const approvals = await api.get<ToolApproval[]>("/api/approvals");
     for (const approval of approvals) {
       renderApprovalCard(approval);
     }
@@ -652,7 +601,7 @@ async function loadPendingApprovals(): Promise<void> {
 async function loadFiles(): Promise<void> {
   const projectId = getActiveProjectId();
   const url = projectId ? `/api/shared-files?project_id=${encodeURIComponent(projectId)}` : "/api/shared-files";
-  const files: SharedFile[] = await (await fetch(url)).json();
+  const files = await api.get<SharedFile[]>(url);
   renderFiles(files);
 }
 
@@ -684,7 +633,7 @@ async function openFileEditor(file: SharedFile): Promise<void> {
     if (file.scope_id) params.set("scope_id", file.scope_id);
     if (file.project_id) params.set("project_id", file.project_id);
     const qs = params.toString();
-    const data = await (await fetch(`/api/shared-files/${encodeURIComponent(file.path)}${qs ? `?${qs}` : ""}`)).json();
+    const data = await api.get<{ content: string; scope_type?: string; scope_name?: string }>(`/api/shared-files/${encodeURIComponent(file.path)}${qs ? `?${qs}` : ""}`);
     openModal(file.path, `
       <textarea id="f-file-content" class="file-editor">${esc(data.content)}</textarea>
       <div class="file-meta-line">Scope: ${esc(data.scope_type || "global")}${data.scope_name ? ` / ${esc(data.scope_name)}` : ""}</div>
@@ -695,23 +644,19 @@ async function openFileEditor(file: SharedFile): Promise<void> {
     `);
     document.getElementById("f-file-save")!.addEventListener("click", async () => {
       const content = (document.getElementById("f-file-content") as HTMLTextAreaElement).value;
-      await fetch(`/api/shared-files/${encodeURIComponent(file.path)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content,
-          created_by: "user",
-          project_id: file.project_id,
-          scope_type: file.scope_type,
-          scope_id: file.scope_id,
-        }),
+      await api.put(`/api/shared-files/${encodeURIComponent(file.path)}`, {
+        content,
+        created_by: "user",
+        project_id: file.project_id,
+        scope_type: file.scope_type,
+        scope_id: file.scope_id,
       });
       closeModal();
       await loadFiles();
     });
     document.getElementById("f-file-del")!.addEventListener("click", async () => {
       if (!await showConfirm(`Delete file "${file.path}"?`)) return;
-      await fetch(`/api/shared-files/${encodeURIComponent(file.path)}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
+      await api.del(`/api/shared-files/${encodeURIComponent(file.path)}${qs ? `?${qs}` : ""}`);
       closeModal();
       await loadFiles();
     });
@@ -740,11 +685,7 @@ document.getElementById("new-file-btn")!.addEventListener("click", () => {
     if (!name) return;
     const content = (document.getElementById("f-newfile-content") as HTMLTextAreaElement).value;
     const artifactKind = projectId ? (document.getElementById("f-newfile-kind") as HTMLSelectElement).value : undefined;
-    await fetch(`/api/shared-files/${encodeURIComponent(name)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, created_by: "user", project_id: projectId, artifact_kind: artifactKind }),
-    });
+    await api.put(`/api/shared-files/${encodeURIComponent(name)}`, { content, created_by: "user", project_id: projectId, artifact_kind: artifactKind });
     closeModal();
     await loadFiles();
   });
@@ -757,16 +698,12 @@ fileUploadInput.addEventListener("change", async () => {
   const file = fileUploadInput.files?.[0];
   if (!file) return;
   const content = await file.text();
-  await fetch(`/api/shared-files/${encodeURIComponent(file.name)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      content,
-      created_by: "user",
-      description: `Uploaded: ${file.name}`,
-      project_id: getActiveProjectId(),
-      artifact_kind: getActiveProjectId() ? "derived" : undefined,
-    }),
+  await api.put(`/api/shared-files/${encodeURIComponent(file.name)}`, {
+    content,
+    created_by: "user",
+    description: `Uploaded: ${file.name}`,
+    project_id: getActiveProjectId(),
+    artifact_kind: getActiveProjectId() ? "derived" : undefined,
   });
   fileUploadInput.value = "";
   await loadFiles();
@@ -776,7 +713,7 @@ fileUploadInput.addEventListener("change", async () => {
 document.getElementById("import-btn")!.addEventListener("click", async () => {
   openModal("Import Conversation History", "<p style='color:var(--text-secondary)'>Loading sessions...</p>");
   try {
-    const sessions = await (await fetch("/api/import/sessions")).json();
+    const sessions = await api.get<{ sessionId: string; preview: string; lastTimestamp: number; messageCount: number; project: string }[]>("/api/import/sessions");
     if (sessions.length === 0) { modalBody.innerHTML = "<p style='color:var(--text-secondary)'>No sessions found.</p>"; return; }
     let html = "";
     for (const s of sessions) {
@@ -794,7 +731,7 @@ document.getElementById("import-btn")!.addEventListener("click", async () => {
       btn.addEventListener("click", async () => {
         const b = btn as HTMLButtonElement;
         b.disabled = true; b.textContent = "...";
-        const r = await (await fetch("/api/import/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: b.dataset.sid }) })).json();
+        const r = await api.post<{ imported: number }>("/api/import/session", { sessionId: b.dataset.sid });
         b.textContent = `Done (${r.imported})`;
       });
     });
@@ -804,11 +741,7 @@ document.getElementById("import-btn")!.addEventListener("click", async () => {
 // --- Messages ---
 async function sendMessage(text: string): Promise<void> {
   try {
-    await fetch("/api/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sender_type: "user", sender_name: "user", content: text, channel_id: currentChannelId }),
-    });
+    await api.post("/api/messages", { sender_type: "user", sender_name: "user", content: text, channel_id: currentChannelId });
   } catch (err) { console.error("Send failed:", err); }
 }
 
@@ -824,12 +757,17 @@ function insertMention(name: string): void {
 
 // --- WebSocket ---
 function connectWebSocket(): void {
-  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${protocol}//${location.host}/ws`);
-  ws.onopen = () => { statusEl.textContent = "Connected"; statusEl.className = "connected"; };
-  ws.onclose = () => { statusEl.textContent = "Disconnected"; statusEl.className = "disconnected"; setTimeout(connectWebSocket, 3000); };
-  ws.onerror = () => { statusEl.textContent = "Error"; statusEl.className = "disconnected"; };
-  ws.onmessage = (event) => { try { handleWsEvent(JSON.parse(event.data)); } catch {} };
+  const wsClient = getWsClient();
+  wsClient.onStatus((status) => {
+    if (status === "connected") {
+      statusEl.textContent = "Connected";
+      statusEl.className = "connected";
+    } else {
+      statusEl.textContent = status === "error" ? "Error" : "Disconnected";
+      statusEl.className = "disconnected";
+    }
+  });
+  wsClient.onEvent(handleWsEvent);
 }
 
 function handleWsEvent(event: WsEvent): void {
@@ -985,7 +923,7 @@ let sidebarProjects: Project[] = [];
 
 async function loadSidebarProjects(): Promise<void> {
   try {
-    sidebarProjects = await (await fetch("/api/projects?status=active")).json();
+    sidebarProjects = await api.get<Project[]>("/api/projects?status=active");
     renderProjectSelector();
   } catch { /* ignore */ }
 }
@@ -1018,6 +956,7 @@ projectSelectorEl.addEventListener("change", () => {
 
 // When active project changes (from selector or from dashboard), refresh sidebar
 onActiveProjectChange((project) => {
+  saveProject(project?.id ?? null);
   // Sync selector dropdown
   projectSelectorEl.value = project?.id || "";
   // Reload sidebar data filtered by project
@@ -1044,6 +983,7 @@ let currentView: ViewType = "chat";
 
 function switchView(view: ViewType): void {
   currentView = view;
+  saveView(view);
   const chatArea = document.getElementById("chat-area")!;
   const dashArea = document.getElementById("dashboard-area")!;
   chatArea.style.display = view === "chat" ? "" : "none";
@@ -1061,11 +1001,21 @@ document.querySelectorAll(".view-tab").forEach((tab) => {
 });
 
 // --- Init ---
+const savedState = getSavedState();
+
+// Restore sidebar width
+if (savedState.sidebarWidth) {
+  sidebar.style.width = savedState.sidebarWidth + "px";
+}
+
 initInput(sendMessage, () => agents, () => getActiveProjectId());
 initDashboard();
 loadSidebarProjects();
 loadChannels();
 loadAgents();
 loadFiles();
-switchChannel("general");
+
+// Restore saved state or default to "general" channel / "chat" view
+switchChannel(savedState.channelId || "general");
+if (savedState.view === "dashboard") switchView("dashboard");
 connectWebSocket();

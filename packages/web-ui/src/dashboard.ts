@@ -1,6 +1,7 @@
 import type { Project, ProjectAgent } from "./project-types.js";
 import { setActiveProject } from "./project-context.js";
 import { showConfirm } from "./utils.js";
+import { api, ApiError } from "./transport.js";
 
 let projects: Project[] = [];
 let selectedProjectId: string | null = null;
@@ -20,7 +21,7 @@ export function handleProjectWsEvent(type: string, data: unknown): void {
 
 async function loadProjects(): Promise<void> {
   try {
-    projects = await (await fetch("/api/projects")).json();
+    projects = await api.get<Project[]>("/api/projects");
     renderDashboard();
   } catch (err) {
     console.error("Failed to load projects:", err);
@@ -108,7 +109,7 @@ async function renderProjectDetail(projectId: string): Promise<void> {
   let project: (Project & { agents: ProjectAgent[] }) | null = null;
 
   try {
-    project = await (await fetch(`/api/projects/${projectId}`)).json();
+    project = await api.get(`/api/projects/${projectId}`);
   } catch {
     dashboardArea.innerHTML = `<div class="dash-empty">Failed to load project.</div>`;
     return;
@@ -188,26 +189,26 @@ async function renderProjectDetail(projectId: string): Promise<void> {
   });
 
   document.getElementById("dash-pause")?.addEventListener("click", async () => {
-    await fetch(`/api/projects/${projectId}/pause`, { method: "POST" });
+    await api.post(`/api/projects/${projectId}/pause`);
     await loadProjects();
     renderProjectDetail(projectId);
   });
 
   document.getElementById("dash-resume")?.addEventListener("click", async () => {
-    await fetch(`/api/projects/${projectId}/resume`, { method: "POST" });
+    await api.post(`/api/projects/${projectId}/resume`);
     await loadProjects();
     renderProjectDetail(projectId);
   });
 
   document.getElementById("dash-archive")?.addEventListener("click", async () => {
-    await fetch(`/api/projects/${projectId}/archive`, { method: "POST" });
+    await api.post(`/api/projects/${projectId}/archive`);
     await loadProjects();
     renderProjectDetail(projectId);
   });
 
   document.getElementById("dash-delete")?.addEventListener("click", async () => {
     if (!await showConfirm("Delete this project? This cannot be undone.")) return;
-    await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
+    await api.del(`/api/projects/${projectId}`);
     selectedProjectId = null;
     setActiveProject(null);
     await loadProjects();
@@ -222,7 +223,7 @@ async function renderProjectDetail(projectId: string): Promise<void> {
       e.stopPropagation();
       const agentName = (btn as HTMLElement).dataset.removeAgent!;
       if (!await showConfirm(`Remove ${agentName} from this project?`)) return;
-      await fetch(`/api/projects/${projectId}/agents/${encodeURIComponent(agentName)}`, { method: "DELETE" });
+      await api.del(`/api/projects/${projectId}/agents/${encodeURIComponent(agentName)}`);
       await loadProjects();
       renderProjectDetail(projectId);
     });
@@ -272,21 +273,12 @@ function openCreateProjectModal(): void {
     // Auto-detect tech stack
     techStatus.textContent = "Detecting...";
     try {
-      const r = await fetch("/api/system/detect-tech-stack", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ directory: dir }),
-      });
-      if (r.ok) {
-        const data = await r.json() as { tech_stack: string[] };
-        if (data.tech_stack.length > 0) {
-          techInput.value = data.tech_stack.join(", ");
-          techStatus.textContent = `${data.tech_stack.length} detected`;
-        } else {
-          techStatus.textContent = "No frameworks detected";
-        }
+      const data = await api.post<{ tech_stack: string[] }>("/api/system/detect-tech-stack", { directory: dir });
+      if (data.tech_stack.length > 0) {
+        techInput.value = data.tech_stack.join(", ");
+        techStatus.textContent = `${data.tech_stack.length} detected`;
       } else {
-        techStatus.textContent = "";
+        techStatus.textContent = "No frameworks detected";
       }
     } catch {
       techStatus.textContent = "";
@@ -296,8 +288,7 @@ function openCreateProjectModal(): void {
   // Browse button: open native folder picker
   document.getElementById("f-proj-browse")!.addEventListener("click", async () => {
     try {
-      const r = await fetch("/api/system/pick-directory");
-      const data = await r.json() as { directory: string | null };
+      const data = await api.get<{ directory: string | null }>("/api/system/pick-directory");
       if (data.directory) {
         dirInput.value = data.directory;
         await onDirectoryChanged(data.directory);
@@ -335,19 +326,7 @@ function openCreateProjectModal(): void {
     btn.textContent = "Creating...";
 
     try {
-      const r = await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ directory, name: name || undefined, description, tech_stack }),
-      });
-      if (!r.ok) {
-        const data = await r.json();
-        alert(data.error || "Failed to create project");
-        btn.disabled = false;
-        btn.textContent = "Create Project";
-        return;
-      }
-      const newProject = await r.json() as Project;
+      const newProject = await api.post<Project>("/api/projects", { directory, name: name || undefined, description, tech_stack });
 
       overlay.classList.add("hidden");
       await loadProjects();
@@ -362,7 +341,7 @@ function openCreateProjectModal(): void {
       setActiveProject(fullProject);
       renderDashboard();
     } catch (err) {
-      alert("Failed: " + (err as Error).message);
+      alert(err instanceof ApiError ? err.errorMessage : "Failed: " + (err as Error).message);
       btn.disabled = false;
       btn.textContent = "Create Project";
     }
@@ -395,20 +374,9 @@ function openEditProjectModal(project: Project): void {
     btn.textContent = "Saving...";
 
     try {
-      const r = await fetch(`/api/projects/${project.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description, tech_stack }),
-      });
-      if (!r.ok) {
-        const data = await r.json();
-        alert(data.error || "Failed to update project");
-        btn.disabled = false;
-        btn.textContent = "Save Changes";
-        return;
-      }
+      await api.put(`/api/projects/${project.id}`, { name, description, tech_stack });
     } catch (err) {
-      alert("Failed: " + (err as Error).message);
+      alert(err instanceof ApiError ? err.errorMessage : "Failed: " + (err as Error).message);
       btn.disabled = false;
       btn.textContent = "Save Changes";
       return;
@@ -438,8 +406,8 @@ async function openAssignAgentModal(projectId: string): Promise<void> {
   let allAgents: AgentWorkspace[] = [];
   let assignedNames: string[] = [];
   try {
-    allAgents = await (await fetch("/api/workspaces")).json();
-    const projectDetail = await (await fetch(`/api/projects/${projectId}`)).json();
+    allAgents = await api.get<AgentWorkspace[]>("/api/workspaces");
+    const projectDetail = await api.get<{ agents?: ProjectAgent[] }>(`/api/projects/${projectId}`);
     assignedNames = (projectDetail.agents || []).map((a: ProjectAgent) => a.agent_name);
   } catch {
     body.innerHTML = `<div class="text-secondary">Failed to load agents.</div>`;
@@ -535,20 +503,9 @@ async function openAssignAgentModal(projectId: string): Promise<void> {
     btn.textContent = "Assigning...";
 
     try {
-      const r = await fetch(`/api/projects/${projectId}/agents`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_name: selectedAgent, role_in_project, assignment_type }),
-      });
-      if (!r.ok) {
-        const data = await r.json();
-        alert(data.error || "Failed to assign agent");
-        btn.disabled = false;
-        btn.textContent = "Assign to Project";
-        return;
-      }
+      await api.post(`/api/projects/${projectId}/agents`, { agent_name: selectedAgent, role_in_project, assignment_type });
     } catch (err) {
-      alert("Failed: " + (err as Error).message);
+      alert(err instanceof ApiError ? err.errorMessage : "Failed: " + (err as Error).message);
       btn.disabled = false;
       btn.textContent = "Assign to Project";
       return;
@@ -572,33 +529,10 @@ async function openAssignAgentModal(projectId: string): Promise<void> {
     btn.textContent = "Creating...";
 
     try {
-      const createResp = await fetch("/api/agents/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, role, wake }),
-      });
-      if (!createResp.ok) {
-        const data = await createResp.json();
-        alert(data.error || "Failed to create agent");
-        btn.disabled = false;
-        btn.textContent = "Create & Assign";
-        return;
-      }
-
-      const assignResp = await fetch(`/api/projects/${projectId}/agents`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_name: name, role_in_project: role, assignment_type }),
-      });
-      if (!assignResp.ok) {
-        const data = await assignResp.json();
-        alert(data.error || "Failed to assign agent to project");
-        btn.disabled = false;
-        btn.textContent = "Create & Assign";
-        return;
-      }
+      await api.post("/api/agents/create", { name, role, wake });
+      await api.post(`/api/projects/${projectId}/agents`, { agent_name: name, role_in_project: role, assignment_type });
     } catch (err) {
-      alert("Failed: " + (err as Error).message);
+      alert(err instanceof ApiError ? err.errorMessage : "Failed: " + (err as Error).message);
       btn.disabled = false;
       btn.textContent = "Create & Assign";
       return;

@@ -1,0 +1,135 @@
+import fs from "node:fs";
+import path from "node:path";
+import { PROJECT_ROOT } from "./config.js";
+import { getDb } from "./db/index.js";
+const AGENTS_DIR = path.join(PROJECT_ROOT, "agents");
+function removePathIfPresent(targetPath) {
+    try {
+        fs.rmSync(targetPath, { force: true, recursive: true });
+    }
+    catch {
+        // Best effort.
+    }
+}
+function replaceSymlink(linkPath, targetPath) {
+    removePathIfPresent(linkPath);
+    if (!targetPath) {
+        return;
+    }
+    fs.symlinkSync(targetPath, linkPath);
+}
+function buildPointerReadme() {
+    return [
+        "# Claude Crew Workspace Pointers",
+        "",
+        "This agent keeps its own workspace as the default cwd.",
+        "Use the pointers below to access the active collaboration context without changing the runtime cwd.",
+        "",
+        "- `current-project/` -> canonical project assets",
+        "- `current-workplace/` -> derived artifacts and active execution outputs",
+        "- `context.json` -> machine-readable metadata for the current assignment, including current project agents",
+        "",
+    ].join("\n");
+}
+export function getAgentWorkspaceContext(agentName) {
+    const db = getDb();
+    const agentDir = path.join(AGENTS_DIR, agentName);
+    const contextDir = path.join(agentDir, ".crew");
+    const contextFile = path.join(contextDir, "context.json");
+    const currentProjectLink = path.join(contextDir, "current-project");
+    const currentWorkplaceLink = path.join(contextDir, "current-workplace");
+    const assignment = db.prepare(`
+    SELECT
+      p.id as project_id,
+      p.name as project_name,
+      p.slug as project_slug,
+      p.directory as project_directory,
+      w.id as workplace_id,
+      w.name as workplace_name,
+      w.slug as workplace_slug,
+      w.directory as workplace_directory,
+      w.kind as workplace_kind
+    FROM project_agents pa
+    JOIN projects p ON p.id = pa.project_id
+    LEFT JOIN workplaces w ON w.id = pa.active_workplace_id
+    WHERE pa.agent_name = ? AND pa.status = 'active' AND p.status = 'active'
+    ORDER BY pa.assigned_at DESC
+    LIMIT 1
+  `).get(agentName);
+    const projectAgents = assignment
+        ? db.prepare(`
+      SELECT agent_name, role_in_project, assignment_type
+      FROM project_agents
+      WHERE project_id = ? AND status = 'active'
+      ORDER BY assigned_at ASC
+    `).all(assignment.project_id)
+        : [];
+    return {
+        agentName,
+        agentDir,
+        contextDir,
+        contextFile,
+        currentProjectLink,
+        currentWorkplaceLink,
+        project: assignment ? {
+            id: assignment.project_id,
+            name: assignment.project_name,
+            slug: assignment.project_slug,
+            directory: assignment.project_directory,
+        } : null,
+        workplace: assignment?.workplace_id ? {
+            id: assignment.workplace_id,
+            name: assignment.workplace_name || "Workplace",
+            slug: assignment.workplace_slug || "workplace",
+            directory: assignment.workplace_directory || "",
+            kind: assignment.workplace_kind || "derived",
+        } : null,
+        projectAgents: projectAgents.map((row) => ({
+            name: row.agent_name,
+            role_in_project: row.role_in_project,
+            assignment_type: row.assignment_type,
+        })),
+    };
+}
+export function syncAgentWorkspaceContext(agentName) {
+    const context = getAgentWorkspaceContext(agentName);
+    if (!fs.existsSync(context.agentDir)) {
+        return context;
+    }
+    fs.mkdirSync(context.contextDir, { recursive: true });
+    fs.writeFileSync(path.join(context.contextDir, "README.md"), buildPointerReadme(), "utf-8");
+    const payload = {
+        agent_name: context.agentName,
+        agent_dir: context.agentDir,
+        project: context.project,
+        workplace: context.workplace,
+        project_agents: context.projectAgents,
+        pointers: {
+            current_project: context.project ? context.currentProjectLink : null,
+            current_workplace: context.workplace ? context.currentWorkplaceLink : null,
+        },
+    };
+    fs.writeFileSync(context.contextFile, JSON.stringify(payload, null, 2) + "\n", "utf-8");
+    replaceSymlink(context.currentProjectLink, context.project?.directory || null);
+    replaceSymlink(context.currentWorkplaceLink, context.workplace?.directory || null);
+    return context;
+}
+export function buildAgentWorkspaceEnv(agentName) {
+    const context = syncAgentWorkspaceContext(agentName);
+    const env = {
+        CLAUDE_CREW_AGENT_DIR: context.agentDir,
+        CLAUDE_CREW_CONTEXT_DIR: context.contextDir,
+        CLAUDE_CREW_CONTEXT_FILE: context.contextFile,
+    };
+    if (context.project) {
+        env.CLAUDE_CREW_PROJECT_ID = context.project.id;
+        env.CLAUDE_CREW_PROJECT_DIR = context.project.directory;
+        env.CLAUDE_CREW_PROJECT_AGENTS = context.projectAgents.map((agent) => agent.name).join(",");
+    }
+    if (context.workplace) {
+        env.CLAUDE_CREW_WORKPLACE_ID = context.workplace.id;
+        env.CLAUDE_CREW_WORKPLACE_DIR = context.workplace.directory;
+    }
+    return env;
+}
+//# sourceMappingURL=agent-context.js.map

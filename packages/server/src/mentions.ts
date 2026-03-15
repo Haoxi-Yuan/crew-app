@@ -1,4 +1,5 @@
 import { getDb, type AgentRow } from "./db/index.js";
+import { broadcast } from "./ws/handler.js";
 
 export function parseMentions(content: string): string[] {
   const mentionRegex = /@([\w][\w-]*)/g;
@@ -73,6 +74,7 @@ export function createPendingMentions(
     "INSERT INTO pending_mentions (message_id, agent_name, created_at) VALUES (?, ?, ?)"
   );
 
+  const inserted: string[] = [];
   const insertMany = db.transaction((names: string[]) => {
     for (const name of names) {
       if (allowedNames && !allowedNames.has(name)) {
@@ -83,9 +85,17 @@ export function createPendingMentions(
         .get(name);
       if (agentExists) {
         stmt.run(messageId, name, now);
+        inserted.push(name);
       }
     }
   });
 
   insertMany(agentNames);
+
+  for (const name of inserted) {
+    broadcast({
+      type: "mention:pending",
+      data: { agentName: name, messageId, channelId },
+    });
+  }
 }

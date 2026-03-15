@@ -1,16 +1,16 @@
 import { Router, type Request, type Response } from "express";
 import type { Router as RouterType } from "express";
 import { createHash, randomUUID } from "node:crypto";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 import { buildAgentWorkspaceEnv, syncAgentWorkspaceContext } from "../agent-context.js";
 import { getDb, type AgentRow } from "../db/index.js";
 import { broadcast } from "../ws/handler.js";
-import { PROJECT_ROOT, WORKLOG_DIR } from "../config.js";
+import { PROJECT_ROOT, WORKLOG_DIR, MCP_BRIDGE_PATH, MCP_TOOL_MEMORY_PATH } from "../config.js";
+import { findBinary } from "../utils/find-binary.js";
 import { getProjectById, getWorkplaceById } from "../storage-scope.js";
-import { getAllAgentTmuxStates, getAllAgentContextPercents, getAgentTerminalContent } from "../tmux-monitor.js";
 import {
   clearAgentMetadataKeys,
   DEFAULT_PROVIDER,
@@ -21,21 +21,11 @@ import {
   type ApprovalPolicy,
   type SandboxMode,
 } from "../agent-runtime.js";
-import {
-  getCodexContextPercent,
-  getCodexState,
-  getCodexTerminalContent,
-  interruptCodexAgent,
-  restartCodexAgent,
-  resumeCodexAgent,
-  sendManualInputToCodexAgent,
-  startCodexAgent,
-  stopCodexAgent,
-} from "../providers/codex.js";
+import { getProviderFor, getProviderByType } from "../providers/runtime.js";
 
 const execFileAsync = promisify(execFile);
 const AGENTS_DIR = path.join(PROJECT_ROOT, "agents");
-const BRIDGE_PATH = path.join(PROJECT_ROOT, "packages/mcp-bridge/dist/index.js");
+const BRIDGE_PATH = MCP_BRIDGE_PATH;
 
 const router: RouterType = Router();
 
@@ -59,53 +49,9 @@ export interface ClaudeRuntimeVerification {
   command: string;
 }
 
-// --- Helper: find node binary ---
+// --- Helper: find node / claude binaries via shared utility ---
 function findNodePath(): string {
-  if (process.execPath && fs.existsSync(process.execPath)) {
-    return process.execPath;
-  }
-  try {
-    return execFileSync("which", ["node"]).toString().trim();
-  } catch { /* ignore */ }
-  const candidates = [
-    path.join(process.env.HOME || "", ".nvm/versions/node"),
-    "/opt/homebrew/bin/node",
-    "/usr/local/bin/node",
-  ];
-  for (const c of candidates) {
-    if (c.includes("nvm")) {
-      try {
-        for (const d of fs.readdirSync(c)) {
-          const p = path.join(c, d, "bin/node");
-          if (fs.existsSync(p)) return p;
-        }
-      } catch { /* ignore */ }
-    } else if (fs.existsSync(c)) return c;
-  }
-  return "";
-}
-
-// --- Helper: find claude binary ---
-function findClaudePath(): string {
-  try {
-    return execFileSync("which", ["claude"]).toString().trim();
-  } catch { /* ignore */ }
-  const candidates = [
-    path.join(process.env.HOME || "", ".nvm/versions/node"),
-    "/opt/homebrew/bin/claude",
-    "/usr/local/bin/claude",
-  ];
-  for (const c of candidates) {
-    if (c.includes("nvm")) {
-      try {
-        for (const d of fs.readdirSync(c)) {
-          const p = path.join(c, d, "bin/claude");
-          if (fs.existsSync(p)) return p;
-        }
-      } catch { /* ignore */ }
-    } else if (fs.existsSync(c)) return c;
-  }
-  return "";
+  return findBinary("node");
 }
 
 function createClaudeInstructions(name: string, role: string): string {
@@ -251,27 +197,13 @@ function createWorkspace(name: string, role: string, provider: AgentProvider): v
   syncAgentWorkspaceContext(name);
 }
 
-// --- Helper: kill tmux session + bridge processes ---
+// --- Helper: stop agent runtime via provider ---
 async function killAgentProcesses(name: string): Promise<void> {
-  if (getProvider(name) === "codex") {
-    await stopCodexAgent(name);
-    return;
+  try {
+    await getProviderFor(name).stop(name);
+  } catch {
+    // Provider may not be registered or agent may not be running
   }
-  const session = `crew-${name}`;
-
-  // Kill tmux session
-  try {
-    await execFileAsync("tmux", ["kill-session", "-t", session]);
-  } catch { /* session might not exist */ }
-
-  // Kill MCP bridge processes for this agent
-  try {
-    const { stdout } = await execFileAsync("pgrep", ["-f", `mcp-bridge.*${name}`]);
-    const pids = stdout.trim().split("\n").filter(Boolean);
-    for (const pid of pids) {
-      try { process.kill(parseInt(pid), "SIGTERM"); } catch { /* ignore */ }
-    }
-  } catch { /* no matching processes */ }
 }
 
 function getClaudeSettingsPath(agentDir: string): string {
@@ -282,7 +214,7 @@ function computeClaudeBridgeFingerprint(agentDir: string): string {
   const hasher = createHash("sha256");
   const inputs = [
     BRIDGE_PATH,
-    path.join(PROJECT_ROOT, "packages", "mcp-bridge", "dist", "tool-memory.js"),
+    MCP_TOOL_MEMORY_PATH,
     path.join(agentDir, ".mcp.json"),
     getClaudeSettingsPath(agentDir),
   ];
@@ -593,41 +525,9 @@ router.post("/create", async (req: Request, res: Response) => {
 
   // Optionally wake (start provider runtime)
   if (wake) {
-    if (agentProvider === "codex") {
-      try {
-        await startCodexAgent(name);
-        res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir, woke: true });
-      } catch (err) {
-        res.status(500).json({
-          ok: false,
-          id: agentId,
-          name,
-          provider: agentProvider,
-          workspace: agentDir,
-          woke: false,
-          wakeError: (err as Error).message,
-        });
-      }
-      return;
-    }
-
-    const claudePath = findClaudePath();
-    if (!claudePath) {
-      res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir, wakeError: "Claude Code CLI not found" });
-      return;
-    }
-
     try {
-      const verification = await startVerifiedClaudeSession(agentDir, claudePath, name);
-      res.json({
-        ok: true,
-        id: agentId,
-        name,
-        provider: agentProvider,
-        workspace: agentDir,
-        woke: true,
-        verification,
-      });
+      await getProviderFor(name).start(name);
+      res.json({ ok: true, id: agentId, name, provider: agentProvider, workspace: agentDir, woke: true });
     } catch (err) {
       res.status(500).json({
         ok: false,
@@ -700,26 +600,25 @@ router.get("/", (req: Request, res: Response) => {
       .all() as AgentRow[];
   }
 
-  const tmuxStates = getAllAgentTmuxStates();
-  const contextPercents = getAllAgentContextPercents();
-  const result = agents.map((a) => ({
-    ...a,
-    tmuxState: a.provider === "codex" ? getCodexState(a.name) : (tmuxStates.get(a.name) || "no_session"),
-    contextPercent: a.provider === "codex" ? getCodexContextPercent(a.name) : (contextPercents.get(a.name) || 0),
-  }));
+  const result = agents.map((a) => {
+    const p = getProviderByType(a.provider as AgentProvider);
+    return {
+      ...a,
+      tmuxState: p ? p.getState(a.name) : "no_session",
+      contextPercent: p ? p.getContextPercent(a.name) : 0,
+    };
+  });
   res.json(result);
 });
 
 // GET /agents/:name/terminal - Get current terminal content for an agent
 router.get("/:name/terminal", (_req: Request, res: Response) => {
   const { name } = _req.params;
-  const content = getProvider(name as string) === "codex"
-    ? getCodexTerminalContent(name as string)
-    : getAgentTerminalContent(name as string);
+  const content = getProviderFor(name as string).getTerminalContent(name as string);
   res.json({ name, content });
 });
 
-// POST /agents/:name/terminal/input - Send input to agent's tmux session
+// POST /agents/:name/terminal/input - Send input to agent's runtime
 router.post("/:name/terminal/input", async (req: Request, res: Response) => {
   const { name } = req.params;
   const { input, type } = req.body as { input?: string; type?: string };
@@ -728,34 +627,11 @@ router.post("/:name/terminal/input", async (req: Request, res: Response) => {
     return;
   }
 
-  const sessionName = `crew-${name}`;
-
-  if (getProvider(name as string) === "codex") {
-    try {
-      await sendManualInputToCodexAgent(name as string, input, type);
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: `Failed to send input to Codex agent: ${(err as Error).message}` });
-    }
-    return;
-  }
-
   try {
-    await execFileAsync("tmux", ["has-session", "-t", sessionName]);
-  } catch {
-    res.status(404).json({ error: `No tmux session for agent '${name}'` });
-    return;
-  }
-
-  try {
-    if (type === "key") {
-      await execFileAsync("tmux", ["send-keys", "-t", sessionName, input]);
-    } else {
-      await execFileAsync("tmux", ["send-keys", "-t", sessionName, input, "Enter"]);
-    }
+    await getProviderFor(name as string).sendInput(name as string, input, type);
     res.json({ ok: true });
-  } catch {
-    res.status(500).json({ error: "Failed to send input" });
+  } catch (err) {
+    res.status(500).json({ error: `Failed to send input: ${(err as Error).message}` });
   }
 });
 
@@ -1075,22 +951,7 @@ router.put("/:name/config", async (req: Request, res: Response) => {
   // Optionally restart the agent to apply new config
   if (restart) {
     try {
-      if (provider === "codex") {
-        await restartCodexAgent(name as string);
-      } else {
-        const session = `crew-${name}`;
-        await execFileAsync("tmux", ["has-session", "-t", session]);
-        await killAgentProcesses(name as string);
-        await new Promise((r) => setTimeout(r, 2000));
-
-        const claudePath = findClaudePath();
-        if (claudePath) {
-          const agentDir = path.join(AGENTS_DIR, name as string);
-          if (fs.existsSync(agentDir)) {
-            await startVerifiedClaudeSession(agentDir, claudePath, name as string, { forceNewSession: true });
-          }
-        }
-      }
+      await getProviderFor(name as string).restart(name as string);
     } catch {
       // Agent might not be running; config still saved.
     }
@@ -1111,15 +972,14 @@ router.put("/:name/config", async (req: Request, res: Response) => {
 router.get("/:name/runtime-status", (req: Request, res: Response) => {
   const { name } = req.params;
   const provider = getProvider(name as string);
-  const tmuxStates = getAllAgentTmuxStates();
-  const contextPercents = getAllAgentContextPercents();
+  const p = getProviderFor(name as string);
   const config = getAgentRuntimeConfig(name as string);
 
   res.json({
     name,
     provider,
-    runtimeState: provider === "codex" ? getCodexState(name as string) : (tmuxStates.get(name as string) || "no_session"),
-    contextPercent: provider === "codex" ? getCodexContextPercent(name as string) : (contextPercents.get(name as string) || 0),
+    runtimeState: p.getState(name as string),
+    contextPercent: p.getContextPercent(name as string),
     config,
   });
 });
@@ -1148,67 +1008,31 @@ async function authorOnlyAction(req: Request, res: Response, action: () => Promi
 
 router.post("/:name/restart", async (req: Request, res: Response) => {
   const { name } = req.params;
-  const provider = getProvider(name as string);
   await authorOnlyAction(req, res, async () => {
-    if (provider === "codex") {
-      return restartCodexAgent(name as string);
-    }
-    const session = `crew-${name}`;
-    await execFileAsync("tmux", ["has-session", "-t", session]);
-    await killAgentProcesses(name as string);
-    await new Promise((r) => setTimeout(r, 2000));
-    const claudePath = findClaudePath();
-    if (!claudePath) {
-      throw new Error("Claude Code CLI not found");
-    }
-    const agentDir = path.join(AGENTS_DIR, name as string);
-    await startVerifiedClaudeSession(agentDir, claudePath, name as string, { forceNewSession: true });
+    await getProviderFor(name as string).restart(name as string);
     return true;
   });
 });
 
 router.post("/:name/interrupt", async (req: Request, res: Response) => {
   const { name } = req.params;
-  const provider = getProvider(name as string);
   await authorOnlyAction(req, res, async () => {
-    if (provider === "codex") {
-      return interruptCodexAgent(name as string);
-    }
-    await execFileAsync("tmux", ["send-keys", "-t", `crew-${name}`, "C-c"]);
-    return true;
+    return getProviderFor(name as string).interrupt(name as string);
   });
 });
 
 router.post("/:name/resume", async (req: Request, res: Response) => {
   const { name } = req.params;
-  const provider = getProvider(name as string);
   await authorOnlyAction(req, res, async () => {
-    if (provider === "codex") {
-      return resumeCodexAgent(name as string);
-    }
-    await execFileAsync("tmux", ["send-keys", "-t", `crew-${name}`, "Please continue from the current task and report back in chat.", "Enter"]);
-    return true;
+    return getProviderFor(name as string).resume(name as string);
   });
 });
 
 router.post("/:name/reset-session", async (req: Request, res: Response) => {
   const { name } = req.params;
-  const provider = getProvider(name as string);
   await authorOnlyAction(req, res, async () => {
-    if (provider === "codex") {
-      clearAgentMetadataKeys(name as string, ["threadId"]);
-      return restartCodexAgent(name as string, true);
-    }
-    const session = `crew-${name}`;
-    await execFileAsync("tmux", ["has-session", "-t", session]);
-    await killAgentProcesses(name as string);
-    await new Promise((r) => setTimeout(r, 2000));
-    const claudePath = findClaudePath();
-    if (!claudePath) {
-      throw new Error("Claude Code CLI not found");
-    }
-    const agentDir = path.join(AGENTS_DIR, name as string);
-    await startVerifiedClaudeSession(agentDir, claudePath, name as string, { forceNewSession: true });
+    clearAgentMetadataKeys(name as string, ["threadId"]);
+    await getProviderFor(name as string).restart(name as string, { resetSession: true });
     return true;
   });
 });

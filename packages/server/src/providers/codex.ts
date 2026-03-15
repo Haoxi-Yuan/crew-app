@@ -1,4 +1,4 @@
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -6,7 +6,8 @@ import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import WebSocket from "ws";
 import { buildAgentWorkspaceEnv } from "../agent-context.js";
-import { PROJECT_ROOT } from "../config.js";
+import { PROJECT_ROOT, MCP_BRIDGE_PATH } from "../config.js";
+import { findBinary } from "../utils/find-binary.js";
 import { broadcast } from "../ws/handler.js";
 import { getDb } from "../db/index.js";
 import {
@@ -21,11 +22,17 @@ import {
 
 const execFileAsync = promisify(execFile);
 const AGENTS_DIR = path.join(PROJECT_ROOT, "agents");
-const BRIDGE_PATH = path.join(PROJECT_ROOT, "packages/mcp-bridge/dist/index.js");
+const BRIDGE_PATH = MCP_BRIDGE_PATH;
 
-export type ProviderRuntimeState = "idle" | "busy" | "approval_pending" | "no_session";
+import type {
+  RuntimeProvider,
+  ProviderRuntimeState,
+  ProviderApproval,
+} from "./runtime.js";
 
-export interface ProviderApproval {
+export type { ProviderRuntimeState, ProviderApproval };
+
+export interface CodexApproval {
   id: string;
   provider: AgentProvider;
   agentName: string;
@@ -62,7 +69,7 @@ interface CodexSession {
 }
 
 const sessions = new Map<string, CodexSession>();
-const approvalByAgent = new Map<string, ProviderApproval>();
+const approvalByAgent = new Map<string, CodexApproval>();
 const stateByAgent = new Map<string, ProviderRuntimeState>();
 const contentByAgent = new Map<string, string>();
 const contextByAgent = new Map<string, number>();
@@ -82,23 +89,11 @@ function getAgentRole(agentName: string): string {
 }
 
 function findNodePath(): string {
-  if (process.execPath && fs.existsSync(process.execPath)) {
-    return process.execPath;
-  }
-  try {
-    return execFileSync("which", ["node"]).toString().trim();
-  } catch {
-    return "/Users/yuan/.nvm/versions/node/v22.14.0/bin/node";
-  }
+  return findBinary("node");
 }
 
 function findCodexPath(): string {
-  try {
-    return execFileSync("which", ["codex"]).toString().trim();
-  } catch {
-    const fallback = "/Users/yuan/.nvm/versions/node/v22.14.0/bin/codex";
-    return fs.existsSync(fallback) ? fallback : "";
-  }
+  return findBinary("codex");
 }
 
 function appendActivity(agentName: string, chunk: string): void {
@@ -180,7 +175,7 @@ function describeItem(item: unknown): string {
   }
 }
 
-function buildApprovalForRequest(agentName: string, msg: { id?: number | string; method?: string; params?: Record<string, unknown> }): ProviderApproval | null {
+function buildApprovalForRequest(agentName: string, msg: { id?: number | string; method?: string; params?: Record<string, unknown> }): CodexApproval | null {
   const method = msg.method || "";
   const params = msg.params || {};
   const base = {
@@ -773,11 +768,11 @@ export async function restartCodexAgent(agentName: string, resetThread = false):
   return true;
 }
 
-export function getCodexApproval(agentName: string): ProviderApproval | undefined {
+export function getCodexApproval(agentName: string): CodexApproval | undefined {
   return approvalByAgent.get(agentName);
 }
 
-export function getCodexApprovals(): ProviderApproval[] {
+export function getCodexApprovals(): CodexApproval[] {
   return [...approvalByAgent.values()];
 }
 
@@ -792,3 +787,46 @@ export function getCodexTerminalContent(agentName: string): string {
 export function getCodexContextPercent(agentName: string): number {
   return contextByAgent.get(agentName) || 0;
 }
+
+/**
+ * Codex RuntimeProvider adapter.
+ * Wraps existing codex functions into the unified RuntimeProvider interface.
+ */
+export const codexProvider: RuntimeProvider = {
+  name: "codex",
+
+  async start(agentName) {
+    await startCodexAgent(agentName);
+  },
+  async stop(agentName) {
+    await stopCodexAgent(agentName);
+  },
+  async restart(agentName, options) {
+    await restartCodexAgent(agentName, options?.resetSession);
+  },
+  getState: getCodexState,
+  getTerminalContent: getCodexTerminalContent,
+  getContextPercent: getCodexContextPercent,
+  async interrupt(agentName) {
+    return interruptCodexAgent(agentName);
+  },
+  async resume(agentName) {
+    return resumeCodexAgent(agentName);
+  },
+  async sendInput(agentName, input, type) {
+    await sendManualInputToCodexAgent(agentName, input, type);
+  },
+  getApproval(agentName): ProviderApproval | undefined {
+    const a = getCodexApproval(agentName);
+    if (!a) return undefined;
+    return { agentName: a.agentName, key: a.id, toolServer: a.toolServer, toolName: a.toolName, params: a.params, description: a.description };
+  },
+  getApprovals(): ProviderApproval[] {
+    return getCodexApprovals().map((a) => ({
+      agentName: a.agentName, key: a.id, toolServer: a.toolServer, toolName: a.toolName, params: a.params, description: a.description,
+    }));
+  },
+  async respondToApproval(agentName, key) {
+    return respondToCodexApproval(agentName, key);
+  },
+};

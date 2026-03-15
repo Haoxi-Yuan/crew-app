@@ -20,8 +20,11 @@
 import crypto from "node:crypto";
 import { getDb, type SharedStandardRow, type StandardsHistoryRow } from "./db/index.js";
 import { broadcast } from "./ws/handler.js";
-
-const MAX_STANDARDS_BUDGET = 4000;
+import {
+  MAX_STANDARDS_BUDGET,
+  STANDARDS_AUTO_APPLY_CONFIDENCE,
+  STANDARDS_CONSENSUS_MIN,
+} from "./config.js";
 
 interface ProposedUpdate {
   action?: string;
@@ -59,8 +62,8 @@ export function reviewProposedUpdate(
   const effectiveConfidence = Math.min(reflectionConfidence, proposed.confidence || reflectionConfidence);
 
   // 1. Confidence threshold
-  if (effectiveConfidence < 0.8) {
-    return { action: "needs_review", reason: `confidence ${effectiveConfidence.toFixed(2)} < 0.8 threshold` };
+  if (effectiveConfidence < STANDARDS_AUTO_APPLY_CONFIDENCE) {
+    return { action: "needs_review", reason: `confidence ${effectiveConfidence.toFixed(2)} < ${STANDARDS_AUTO_APPLY_CONFIDENCE} threshold` };
   }
 
   // 2. Only additive changes auto-apply
@@ -81,11 +84,11 @@ export function reviewProposedUpdate(
     return { action: "needs_review", reason: `potential contradiction with existing standard: ${contradiction}` };
   }
 
-  // 5. Agent consensus check (>= 2 different agents proposed similar pattern)
+  // 5. Agent consensus check (>= N different agents proposed similar pattern)
   const consensusCount = checkAgentConsensus(proposed.section, proposed.proposed_text, agentName);
-  if (consensusCount < 2) {
+  if (consensusCount < STANDARDS_CONSENSUS_MIN) {
     // Store as pending pattern, don't auto-apply yet
-    return { action: "needs_review", reason: `only ${consensusCount} agent(s) proposed this pattern, need >= 2 for auto-apply` };
+    return { action: "needs_review", reason: `only ${consensusCount} agent(s) proposed this pattern, need >= ${STANDARDS_CONSENSUS_MIN} for auto-apply` };
   }
 
   // All criteria met -> auto-apply

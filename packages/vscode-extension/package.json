@@ -1,0 +1,222 @@
+{
+  "name": "claude-crew",
+  "displayName": "Claude Crew",
+  "description": "Multi-agent collaboration platform for Claude and Codex",
+  "version": "0.1.0",
+  "publisher": "claude-crew",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claude-crew.openPanel",
+        "title": "Open Panel",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.startServer",
+        "title": "Start Server",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.stopServer",
+        "title": "Stop Server",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.restartServer",
+        "title": "Restart Server",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.refreshAgents",
+        "title": "Refresh Agents",
+        "category": "Claude Crew",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claude-crew.wakeAgent",
+        "title": "Wake Agent",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.stopAgent",
+        "title": "Stop Agent",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.wakeAgentFromTree",
+        "title": "Wake",
+        "category": "Claude Crew",
+        "icon": "$(play)"
+      },
+      {
+        "command": "claude-crew.stopAgentFromTree",
+        "title": "Stop",
+        "category": "Claude Crew",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "claude-crew.openAgentChat",
+        "title": "Open Chat",
+        "category": "Claude Crew",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "claude-crew.attachTerminal",
+        "title": "Attach Terminal",
+        "category": "Claude Crew",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "claude-crew.refreshProjects",
+        "title": "Refresh Projects",
+        "category": "Claude Crew",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claude-crew.configureAgent",
+        "title": "Configure Agent",
+        "category": "Claude Crew",
+        "icon": "$(gear)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-crew",
+          "title": "Claude Crew",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "claude-crew": [
+        {
+          "id": "claude-crew-agents",
+          "name": "Agents"
+        },
+        {
+          "id": "claude-crew-projects",
+          "name": "Projects"
+        },
+        {
+          "id": "claude-crew-shared-files",
+          "name": "Shared Files"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "claude-crew.refreshAgents",
+          "when": "view == claude-crew-agents",
+          "group": "navigation"
+        },
+        {
+          "command": "claude-crew.refreshProjects",
+          "when": "view == claude-crew-projects",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "claude-crew.wakeAgentFromTree",
+          "when": "viewItem =~ /^agent-offline/",
+          "group": "inline"
+        },
+        {
+          "command": "claude-crew.stopAgentFromTree",
+          "when": "viewItem =~ /^agent-online/",
+          "group": "inline"
+        },
+        {
+          "command": "claude-crew.openAgentChat",
+          "when": "viewItem =~ /^agent-/",
+          "group": "inline"
+        },
+        {
+          "command": "claude-crew.attachTerminal",
+          "when": "viewItem == agent-online-claude",
+          "group": "inline"
+        },
+        {
+          "command": "claude-crew.wakeAgentFromTree",
+          "when": "viewItem =~ /^agent-offline/",
+          "group": "1_actions"
+        },
+        {
+          "command": "claude-crew.stopAgentFromTree",
+          "when": "viewItem =~ /^agent-online/",
+          "group": "1_actions"
+        },
+        {
+          "command": "claude-crew.attachTerminal",
+          "when": "viewItem == agent-online-claude",
+          "group": "1_actions"
+        },
+        {
+          "command": "claude-crew.configureAgent",
+          "when": "viewItem =~ /^agent-/",
+          "group": "1_actions"
+        },
+        {
+          "command": "claude-crew.openAgentChat",
+          "when": "viewItem =~ /^agent-/",
+          "group": "2_navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Crew",
+      "properties": {
+        "claude-crew.server.port": {
+          "type": "number",
+          "default": 0,
+          "description": "Server port. 0 = auto-select free port (recommended)."
+        },
+        "claude-crew.server.dataDir": {
+          "type": "string",
+          "default": "",
+          "description": "Data directory for SQLite DB, shared files, etc. Empty = extension globalStorage."
+        },
+        "claude-crew.server.projectRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Claude Crew project root directory. Empty = auto-detect from extension path."
+        },
+        "claude-crew.server.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start server when extension activates."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "build:full": "pnpm --filter @claude-crew/server build && pnpm --filter @claude-crew/web-ui build && bash scripts/copy-assets.sh && node esbuild-server.mjs && node esbuild.config.mjs",
+    "copy-assets": "bash scripts/copy-assets.sh",
+    "watch": "node esbuild.config.mjs --watch",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}

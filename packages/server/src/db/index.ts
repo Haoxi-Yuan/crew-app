@@ -10,7 +10,13 @@ let db: Database.Database;
 export function getDb(): Database.Database {
   if (!db) {
     fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-    db = new BetterSqlite3(DB_PATH);
+    const opts: Record<string, unknown> = {};
+    // When CREW_SQLITE_NATIVE_BINDING is set (e.g. in bundled VSIX),
+    // bypass the `bindings` package and load the .node file directly.
+    if (process.env.CREW_SQLITE_NATIVE_BINDING) {
+      opts.nativeBinding = process.env.CREW_SQLITE_NATIVE_BINDING;
+    }
+    db = new BetterSqlite3(DB_PATH, opts);
     initSchema(db);
   }
   return db;

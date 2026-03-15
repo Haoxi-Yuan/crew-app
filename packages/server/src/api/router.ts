@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import type { Router as RouterType } from "express";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
@@ -17,6 +17,7 @@ import reflectionsRouter from "./reflections.js";
 import peaksRouter from "./peaks.js";
 import { getDb, type PendingMentionRow, type MessageRow } from "../db/index.js";
 import { PROJECT_ROOT } from "../config.js";
+import { findBinary } from "../utils/find-binary.js";
 import { DEFAULT_PROVIDER, getProvider } from "../agent-runtime.js";
 import { startCodexAgent, stopCodexAgent } from "../providers/codex.js";
 import { broadcast } from "../ws/handler.js";
@@ -86,26 +87,7 @@ router.post("/mentions/:id/ack", (req: Request, res: Response) => {
 });
 
 function findClaudePath(): string {
-  try { return execFileSync("which", ["claude"]).toString().trim(); } catch {}
-  const candidates = [
-    path.join(process.env.HOME || "", ".nvm/versions/node"),
-    "/opt/homebrew/bin/claude",
-    "/usr/local/bin/claude",
-  ];
-  for (const c of candidates) {
-    if (c.includes("nvm")) {
-      try {
-        const dirs = fs.readdirSync(c);
-        for (const d of dirs) {
-          const p = path.join(c, d, "bin/claude");
-          if (fs.existsSync(p)) return p;
-        }
-      } catch {}
-    } else if (fs.existsSync(c)) {
-      return c;
-    }
-  }
-  return "";
+  return findBinary("claude");
 }
 
 async function startAgentRuntime(
@@ -261,16 +243,7 @@ router.post("/wake-all", (_req: Request, res: Response) => {
     }
 
     if (!claudePath) {
-      try { claudePath = execFileSync("which", ["claude"]).toString().trim(); } catch {}
-      if (!claudePath) {
-        const nvmDir = path.join(process.env.HOME || "", ".nvm/versions/node");
-        try {
-          for (const d of fs.readdirSync(nvmDir)) {
-            const p = path.join(nvmDir, d, "bin/claude");
-            if (fs.existsSync(p)) { claudePath = p; break; }
-          }
-        } catch {}
-      }
+      claudePath = findBinary("claude");
     }
 
     execFile("tmux", ["has-session", "-t", session], (checkErr) => {

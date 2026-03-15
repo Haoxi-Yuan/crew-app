@@ -1,6 +1,14 @@
 // Memory decay engine based on ACT-R cognitive model + SM-2 spaced repetition
 // Implements humanistic memory decay where strength = f(access frequency, spacing, importance, category)
 
+import {
+  MEMORY_MAX_STABILITY_DAYS,
+  MEMORY_MAX_TIMESTAMPS,
+  MEMORY_ARCHIVE_THRESHOLD,
+  MEMORY_DAILY_ARCHIVE_AGE_DAYS,
+  MEMORY_PROMOTION_MIN_ACCESSES,
+} from "./config.js";
+
 export interface MemoryEntry {
   id: string;
   agent_name: string;
@@ -32,8 +40,6 @@ export interface MemoryEntry {
 const ACT_R_DECAY = 0.5;
 const RETRIEVABILITY_STEEPNESS = 3.0;
 const RETRIEVABILITY_THRESHOLD = -1.0;
-const MAX_STABILITY_DAYS = 365;
-const MAX_TIMESTAMPS = 20;
 
 const CATEGORY_WEIGHTS: Record<string, number> = {
   contact: 2.0,
@@ -115,7 +121,7 @@ export function onMemoryAccessed(entry: MemoryEntry, now: number): MemoryEntry {
   updated.last_accessed_at = now;
 
   timestamps.push(now);
-  if (timestamps.length > MAX_TIMESTAMPS) timestamps.shift();
+  if (timestamps.length > MEMORY_MAX_TIMESTAMPS) timestamps.shift();
   updated.access_timestamps = JSON.stringify(timestamps);
 
   // Update stability (SM-2 inspired)
@@ -132,7 +138,7 @@ export function onMemoryAccessed(entry: MemoryEntry, now: number): MemoryEntry {
     stabilityMultiplier = 1.5; // Late access: moderate boost
   }
 
-  updated.stability = Math.min(entry.stability * stabilityMultiplier, MAX_STABILITY_DAYS);
+  updated.stability = Math.min(entry.stability * stabilityMultiplier, MEMORY_MAX_STABILITY_DAYS);
 
   // Apply slow decay category rule
   if (SLOW_DECAY_CATEGORIES.has(entry.category)) {
@@ -152,8 +158,8 @@ export function shouldPromote(entry: MemoryEntry, _now: number): boolean {
   const timestamps = parseTimestamps(entry.access_timestamps);
   const uniqueDays = new Set(timestamps.map((t) => Math.floor(t / 86400000))).size;
 
-  // Criterion 1: Accessed 3+ times over 3+ different days
-  if (entry.access_count >= 3 && uniqueDays >= 3) return true;
+  // Criterion 1: Accessed N+ times over N+ different days
+  if (entry.access_count >= MEMORY_PROMOTION_MIN_ACCESSES && uniqueDays >= MEMORY_PROMOTION_MIN_ACCESSES) return true;
 
   // Criterion 2: High importance and accessed after creation day
   const creationDay = Math.floor(entry.created_at / 86400000);
@@ -170,13 +176,13 @@ export function shouldArchive(entry: MemoryEntry, now: number): boolean {
   if (entry.status === "permanent" || entry.status === "archived") return false;
   if (PERMANENT_CATEGORIES.has(entry.category)) return false;
 
-  // Archive if retrievability drops below 5%
-  if (entry.retrievability < 0.05) return true;
+  // Archive if retrievability drops below threshold
+  if (entry.retrievability < MEMORY_ARCHIVE_THRESHOLD) return true;
 
-  // Archive daily entries older than 90 days with no access
+  // Archive daily entries older than configured age with no access
   if (entry.category === "daily" && entry.access_count === 0) {
     const ageDays = (now - entry.created_at) / 86400000;
-    if (ageDays > 90) return true;
+    if (ageDays > MEMORY_DAILY_ARCHIVE_AGE_DAYS) return true;
   }
 
   return false;

@@ -8,12 +8,13 @@ import {
   PROJECT_ROOT,
   SESSION_AUTO_CYCLE_CONTEXT_PERCENT,
   SESSION_AUTO_CYCLE_COOLDOWN_MS,
+  MONITOR_INTERVAL_MS,
+  CAPTURE_LINES,
 } from "./config.js";
+import { findBinary } from "./utils/find-binary.js";
 import { startVerifiedClaudeSession } from "./api/agents.js";
 
 const execFileAsync = promisify(execFile);
-
-const MONITOR_INTERVAL_MS = 2_000;
 
 export interface ToolApproval {
   id: string;
@@ -417,14 +418,14 @@ async function scanSessions(): Promise<void> {
     try {
       // Capture pane content without ANSI for state detection
       const { stdout: paneContent } = await execFileAsync("tmux", [
-        "capture-pane", "-t", sessionName, "-p", "-S", "-80",
+        "capture-pane", "-t", sessionName, "-p", "-S", `-${CAPTURE_LINES}`,
       ]);
 
       // Capture with ANSI escape codes for terminal display
       let paneContentAnsi = "";
       try {
         const { stdout } = await execFileAsync("tmux", [
-          "capture-pane", "-t", sessionName, "-p", "-e", "-S", "-80",
+          "capture-pane", "-t", sessionName, "-p", "-e", "-S", `-${CAPTURE_LINES}`,
         ]);
         paneContentAnsi = stdout;
       } catch {
@@ -663,30 +664,7 @@ async function cycleAgentSession(agentName: string): Promise<void> {
   await new Promise((r) => setTimeout(r, 2000));
 
   // Find claude path and re-wake
-  let claudePath = "";
-  try {
-    const { stdout } = await execFileAsync("which", ["claude"]);
-    claudePath = stdout.trim();
-  } catch { /* ignore */ }
-
-  if (!claudePath) {
-    const candidates = [
-      path.join(process.env.HOME || "", ".nvm/versions/node"),
-      "/opt/homebrew/bin/claude",
-      "/usr/local/bin/claude",
-    ];
-    for (const c of candidates) {
-      if (c.includes("nvm")) {
-        try {
-          for (const d of fs.readdirSync(c)) {
-            const p = path.join(c, d, "bin/claude");
-            if (fs.existsSync(p)) { claudePath = p; break; }
-          }
-        } catch { /* ignore */ }
-      } else if (fs.existsSync(c)) { claudePath = c; }
-      if (claudePath) break;
-    }
-  }
+  const claudePath = findBinary("claude");
 
   if (!claudePath) {
     console.error(`[tmux-monitor] Cannot re-wake "${agentName}": Claude CLI not found`);

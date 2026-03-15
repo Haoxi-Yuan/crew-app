@@ -1,5 +1,6 @@
 import type { Agent, Message, ToolApproval } from "./types.js";
 import { escapeHtml, getAvatarColor } from "./utils.js";
+import { api } from "./transport.js";
 
 const messagesEl = document.getElementById("messages")!;
 let autoScroll = true;
@@ -499,11 +500,7 @@ let currentTerminalAgent = "";
 async function sendTerminalInput(input: string, type?: string): Promise<void> {
   if (!currentTerminalAgent) return;
   try {
-    await fetch(`/api/agents/${encodeURIComponent(currentTerminalAgent)}/terminal/input`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input, type }),
-    });
+    await api.post(`/api/agents/${encodeURIComponent(currentTerminalAgent)}/terminal/input`, { input, type });
   } catch { /* ignore */ }
 }
 
