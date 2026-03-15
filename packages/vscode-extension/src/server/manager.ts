@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { fork, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -38,17 +38,25 @@ export class ServerManager {
       throw new Error("Server entry point not found. Please build the server first.");
     }
 
+    const nodeBin = this.resolveNodeBinary();
+    if (!nodeBin) {
+      this._onDidChangeState.fire("stopped");
+      throw new Error("System Node.js not found. Please install Node.js 18+.");
+    }
+
     const isBundled = serverEntry.endsWith("server-bundle.mjs");
     const env = this.buildEnv(serverEntry, isBundled);
+    this.outputChannel.appendLine(`[claude-crew] Node: ${nodeBin}`);
     this.outputChannel.appendLine(`[claude-crew] Server entry: ${serverEntry}`);
     this.outputChannel.appendLine(`[claude-crew] Mode: ${isBundled ? "bundled" : "development"}`);
     this.outputChannel.appendLine(`[claude-crew] Data dir: ${env.CREW_DATA_DIR || "(default)"}`);
     this.outputChannel.appendLine(`[claude-crew] Project root: ${env.CREW_PROJECT_ROOT || "(default)"}`);
 
-    const child = fork(serverEntry, [], {
+    // Use spawn with system node (NOT Electron's node) to avoid
+    // NODE_MODULE_VERSION mismatch with native addons like better-sqlite3.
+    const child = spawn(nodeBin, [serverEntry], {
       env: { ...process.env, ...env },
-      stdio: ["pipe", "pipe", "pipe", "ipc"],
-      silent: true,
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
     this.process = child;
@@ -154,6 +162,47 @@ export class ServerManager {
     this._onDidChangeState.dispose();
   }
 
+  /**
+   * Find the system Node.js binary. We must NOT use Electron's built-in
+   * Node because native addons (better-sqlite3) are compiled against
+   * the system Node ABI, not Electron's.
+   */
+  private resolveNodeBinary(): string | null {
+    // Check common paths in order of preference
+    const candidates = [
+      // User-configured
+      vscode.workspace.getConfiguration("claude-crew").get<string>("server.nodePath", ""),
+      // Standard locations (nvm, fnm, homebrew, system)
+    ].filter(Boolean) as string[];
+
+    // Try `which node` to find it on PATH
+    try {
+      const resolved = execFileSync("/usr/bin/env", ["which", "node"], {
+        encoding: "utf-8",
+        timeout: 3000,
+        env: { ...process.env },
+      }).trim();
+      if (resolved) {
+        candidates.push(resolved);
+      }
+    } catch {
+      // which failed, try well-known paths
+    }
+
+    // Well-known fallbacks
+    candidates.push(
+      "/usr/local/bin/node",
+      "/opt/homebrew/bin/node",
+    );
+
+    for (const c of candidates) {
+      if (c && fs.existsSync(c)) {
+        return c;
+      }
+    }
+    return null;
+  }
+
   private resolveServerEntry(): string | null {
     const extensionPath = this.context.extensionPath;
 
@@ -170,7 +219,7 @@ export class ServerManager {
     return null;
   }
 
-  private buildEnv(serverEntry: string, isBundled: boolean): Record<string, string> {
+  private buildEnv(_serverEntry: string, isBundled: boolean): Record<string, string> {
     const config = vscode.workspace.getConfiguration("claude-crew");
     const env: Record<string, string> = {};
     const extensionPath = this.context.extensionPath;
@@ -189,18 +238,7 @@ export class ServerManager {
     }
     fs.mkdirSync(env.CREW_DATA_DIR, { recursive: true });
 
-    // Project root: explicit config > workspace folder > data dir
-    const projectRoot = config.get<string>("server.projectRoot", "");
-    if (projectRoot) {
-      env.CREW_PROJECT_ROOT = projectRoot;
-    } else {
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      if (workspaceFolders && workspaceFolders.length > 0) {
-        env.CREW_PROJECT_ROOT = workspaceFolders[0].uri.fsPath;
-      } else {
-        env.CREW_PROJECT_ROOT = env.CREW_DATA_DIR;
-      }
-    }
+    env.CREW_PROJECT_ROOT = this.resolveProjectRoot(config, env.CREW_DATA_DIR);
 
     // Web UI directory (bundled inside extension)
     const webUiMedia = path.join(extensionPath, "media", "web-ui");
@@ -241,5 +279,53 @@ export class ServerManager {
     // In development mode, all paths resolve naturally from the monorepo
 
     return env;
+  }
+
+  private resolveProjectRoot(
+    config: vscode.WorkspaceConfiguration,
+    dataDir: string,
+  ): string {
+    const configured = config.get<string>("server.projectRoot", "").trim();
+    if (configured) {
+      return configured;
+    }
+
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+    for (const folder of workspaceFolders) {
+      const detected = this.detectCrewProjectRoot(folder.uri.fsPath);
+      if (detected) {
+        return detected;
+      }
+    }
+
+    return dataDir;
+  }
+
+  private detectCrewProjectRoot(workspaceRoot: string): string | null {
+    if (this.looksLikeCrewProjectRoot(workspaceRoot)) {
+      return workspaceRoot;
+    }
+
+    try {
+      const children = fs.readdirSync(workspaceRoot, { withFileTypes: true });
+      for (const child of children) {
+        if (!child.isDirectory()) {
+          continue;
+        }
+        const candidate = path.join(workspaceRoot, child.name);
+        if (this.looksLikeCrewProjectRoot(candidate)) {
+          return candidate;
+        }
+      }
+    } catch {
+      // Ignore unreadable folders and continue with the fallback.
+    }
+
+    return null;
+  }
+
+  private looksLikeCrewProjectRoot(candidate: string): boolean {
+    return fs.existsSync(path.join(candidate, "agents"))
+      && fs.existsSync(path.join(candidate, "package.json"));
   }
 }

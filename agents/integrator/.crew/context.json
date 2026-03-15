@@ -1,33 +1,11 @@
 {
   "agent_name": "integrator",
   "agent_dir": "/Users/yuan/Projects/claude-crew/agents/integrator",
-  "project": {
-    "id": "e98ccd8c-4b38-4ba3-bcb2-d2ed2c5554a0",
-    "name": "Agent Creation Test",
-    "slug": "agent-creation-test",
-    "directory": "/tmp/test-agent-creation"
-  },
-  "workplace": {
-    "id": "00397583-f86a-4b25-827f-21356bf00026",
-    "name": "Default Workplace",
-    "slug": "default",
-    "directory": "/tmp/test-agent-creation/.claude-crew/workplaces/default",
-    "kind": "derived"
-  },
-  "project_agents": [
-    {
-      "name": "author",
-      "role_in_project": "User proxy - intent guardian and team overseer",
-      "assignment_type": "dedicated"
-    },
-    {
-      "name": "integrator",
-      "role_in_project": "Full-process supervisor and implementation validator",
-      "assignment_type": "shared"
-    }
-  ],
+  "project": null,
+  "workplace": null,
+  "project_agents": [],
   "pointers": {
-    "current_project": "/Users/yuan/Projects/claude-crew/agents/integrator/.crew/current-project",
-    "current_workplace": "/Users/yuan/Projects/claude-crew/agents/integrator/.crew/current-workplace"
+    "current_project": null,
+    "current_workplace": null
   }
 }

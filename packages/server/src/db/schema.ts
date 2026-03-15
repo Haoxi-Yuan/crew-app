@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { runMigrations } from "./migrations.js";
 
 /**
@@ -238,5 +239,51 @@ export function initSchema(db: Database.Database): void {
     db.prepare(
       "INSERT INTO channels (id, name, description, status, type, project_id, workplace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)"
     ).run("general", "General", "Default group chat", "active", "public", now, now);
+  }
+
+  // Seed default agents on first run (empty agents table)
+  seedDefaultAgents(db);
+}
+
+interface SeedAgent {
+  name: string;
+  provider: string;
+  role: string;
+  metadata: Record<string, unknown>;
+}
+
+const DEFAULT_AGENTS: SeedAgent[] = [
+  {
+    name: "author",
+    provider: "claude",
+    role: "User proxy - intent guardian, vision architect, agent designer, and team overseer",
+    metadata: { model: "opus", effort: "max" },
+  },
+  {
+    name: "integrator",
+    provider: "codex",
+    role: "Full-process supervisor and implementation validator",
+    metadata: { approvalPolicy: "never", sandboxMode: "danger-full-access" },
+  },
+];
+
+function seedDefaultAgents(db: Database.Database): void {
+  const count = db.prepare("SELECT COUNT(*) AS cnt FROM agents").get() as { cnt: number };
+  if (count.cnt > 0) return;
+
+  const now = Date.now();
+  const insert = db.prepare(
+    "INSERT INTO agents (id, name, provider, role, status, registered_at, metadata) VALUES (?, ?, ?, ?, 'offline', ?, ?)"
+  );
+
+  for (const agent of DEFAULT_AGENTS) {
+    insert.run(
+      randomUUID(),
+      agent.name,
+      agent.provider,
+      agent.role,
+      now,
+      JSON.stringify(agent.metadata),
+    );
   }
 }

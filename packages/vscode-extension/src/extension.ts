@@ -6,16 +6,25 @@ import { AgentTreeProvider, AgentTreeItem } from "./views/agent-tree.js";
 import { ProjectTreeProvider } from "./views/project-tree.js";
 import { SharedFilesTreeProvider } from "./views/shared-files-tree.js";
 import { EventBridge } from "./server/event-bridge.js";
+import { ControlBridge } from "./control/bridge.js";
 
 let serverManager: ServerManager;
 let client: CrewClient | null = null;
 let eventBridge: EventBridge;
 let statusBarItem: vscode.StatusBarItem;
+let controlBridge: ControlBridge | null = null;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const outputChannel = vscode.window.createOutputChannel("Claude Crew");
   serverManager = new ServerManager(context, outputChannel);
   eventBridge = new EventBridge(outputChannel);
+  try {
+    controlBridge = new ControlBridge(context, serverManager, outputChannel);
+    await controlBridge.start();
+  } catch (err) {
+    controlBridge = null;
+    outputChannel.appendLine(`[claude-crew] Control bridge failed to start: ${(err as Error).message}`);
+  }
 
   // Tree view providers
   const agentTree = new AgentTreeProvider();
@@ -38,6 +47,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // React to server state changes
   serverManager.onDidChangeState((state) => {
     updateStatusBar(state);
+    controlBridge?.updateServerState(state);
     if (state === "running" && serverManager.port) {
       if (!client) {
         client = new CrewClient(serverManager.port);
@@ -328,6 +338,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     dispose: () => {
       serverManager.dispose();
       eventBridge.dispose();
+      controlBridge?.dispose();
       agentTree.dispose();
       projectTree.dispose();
       sharedFilesTree.dispose();
@@ -352,6 +363,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export function deactivate(): void {
+  controlBridge?.dispose();
   serverManager?.dispose();
 }
 

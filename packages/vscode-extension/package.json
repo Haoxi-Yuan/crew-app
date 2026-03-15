@@ -1,7 +1,7 @@
 {
   "name": "claude-crew",
   "displayName": "Claude Crew",
-  "description": "Multi-agent collaboration platform for Claude and Codex",
+  "description": "Human-governed multi-agent orchestration in VS Code for Claude and Codex",
   "version": "0.1.0",
   "publisher": "claude-crew",
   "license": "MIT",

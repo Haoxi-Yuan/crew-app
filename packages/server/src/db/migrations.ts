@@ -176,6 +176,18 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    name: "align_author_role_with_claude_md",
+    up(db) {
+      if (!tableExists(db, "agents")) return;
+      db.prepare(
+        `UPDATE agents
+         SET role = ?
+         WHERE name = 'author' AND role = 'journal article author'`
+      ).run("User proxy - intent guardian, vision architect, agent designer, and team overseer");
+    },
+  },
 ];
 
 /**
