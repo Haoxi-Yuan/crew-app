@@ -2,9 +2,11 @@
   "name": "claude-crew",
   "displayName": "Claude Crew",
   "description": "Human-governed multi-agent orchestration in VS Code for Claude and Codex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "claude-crew",
   "license": "MIT",
+  "icon": "media/icon.png",
+  "extensionKind": ["ui", "workspace"],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -95,7 +97,7 @@
         {
           "id": "claude-crew",
           "title": "Claude Crew",
-          "icon": "$(hubot)"
+          "icon": "media/icon-activitybar.svg"
         }
       ]
     },

@@ -477,6 +477,7 @@ router.post("/create", async (req: Request, res: Response) => {
     if (!fs.existsSync(path.join(settingsDir, "settings.local.json"))) {
       fs.mkdirSync(settingsDir, { recursive: true });
       const defaultPerms = permissions || [
+        // MCP crew tools
         "mcp__claude-crew__send_to_chat",
         "mcp__claude-crew__read_chat",
         "mcp__claude-crew__check_mentions",
@@ -490,6 +491,14 @@ router.post("/create", async (req: Request, res: Response) => {
         "mcp__claude-crew__tool_handbook",
         "mcp__claude-crew__search_chat",
         "mcp__claude-crew__get_shared_file_meta",
+        "mcp__claude-crew__get_project_context",
+        // Built-in Claude Code tools for autonomous file operations
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "Glob",
+        "Grep",
       ];
       const settings = {
         permissions: {

@@ -253,9 +253,9 @@ router.post("/", (req: Request, res: Response) => {
   // Initialize project directory: create .claude-crew/ and CLAUDE.md
   initProjectDirectory(id);
 
-  // Create a default channel for the project
+  // Create a default channel for the project (or repair missing project_id link)
   const channelId = `project-${slug}`;
-  const channelExists = db.prepare("SELECT 1 FROM channels WHERE id = ?").get(channelId);
+  const channelExists = db.prepare("SELECT id, project_id FROM channels WHERE id = ?").get(channelId) as { id: string; project_id: string | null } | undefined;
   if (!channelExists) {
     db.prepare(
       "INSERT INTO channels (id, name, description, status, type, project_id, created_at, updated_at) VALUES (?, ?, ?, 'active', 'public', ?, ?, ?)"
@@ -264,6 +264,9 @@ router.post("/", (req: Request, res: Response) => {
       type: "channel:created",
       data: { id: channelId, name: projectName, description: `Project channel for ${projectName}`, status: "active", type: "public", project_id: id, members: null, created_at: now, updated_at: now },
     });
+  } else if (!channelExists.project_id) {
+    // Repair: link orphaned project channel to its project
+    db.prepare("UPDATE channels SET project_id = ?, updated_at = ? WHERE id = ?").run(id, now, channelId);
   }
 
   const project = {

@@ -14,6 +14,15 @@ let eventBridge: EventBridge;
 let statusBarItem: vscode.StatusBarItem;
 let controlBridge: ControlBridge | null = null;
 
+// Debounce helper for tree view refreshes
+function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return ((...args: unknown[]) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  }) as T;
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const outputChannel = vscode.window.createOutputChannel("Claude Crew");
   serverManager = new ServerManager(context, outputChannel);
@@ -58,30 +67,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       projectTree.setClient(client);
       sharedFilesTree.setClient(client);
       eventBridge.connect(serverManager.port);
+      CrewWebViewPanel.notifyServerState("running");
     } else if (state === "stopped") {
       agentTree.clearClient();
       projectTree.clearClient();
       sharedFilesTree.clearClient();
       eventBridge.disconnect();
+      CrewWebViewPanel.notifyServerState("stopped");
     }
   });
+
+  // Debounced tree refresh functions to avoid excessive re-renders
+  const debouncedAgentRefresh = debounce(() => agentTree.refresh(), 300);
+  const debouncedProjectRefresh = debounce(() => projectTree.refresh(), 300);
+  const debouncedFilesRefresh = debounce(() => sharedFilesTree.refresh(), 300);
 
   // Wire up event bridge to auto-refresh tree views and show notifications
   context.subscriptions.push(
     eventBridge.onEvent((event) => {
       switch (event.type) {
         case "agent:status":
-          agentTree.refresh();
+          debouncedAgentRefresh();
           refreshStatusBarCounts();
           break;
         case "project:created":
         case "project:updated":
         case "project:deleted":
         case "project:agent_changed":
-          projectTree.refresh();
+          debouncedProjectRefresh();
           break;
         case "file:updated":
-          sharedFilesTree.refresh();
+          debouncedFilesRefresh();
           break;
         case "approval:pending": {
           pendingApprovals++;

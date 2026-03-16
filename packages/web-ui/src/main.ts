@@ -768,12 +768,20 @@ function connectWebSocket(): void {
     }
   });
   wsClient.onEvent(handleWsEvent);
+  // Catch-up on reconnect: reload current channel messages and agent state
+  wsClient.onReconnect(() => {
+    switchChannel(currentChannelId);
+    loadAgents();
+    loadFiles();
+  });
 }
 
 function handleWsEvent(event: WsEvent): void {
   switch (event.type) {
     case "message:new": {
       const msg = event.data as Message;
+      // Dedup: skip if message already rendered
+      if (msg.id && document.querySelector(`[data-msg-id="${msg.id}"]`)) break;
       if (msg.channel_id === currentChannelId || !msg.channel_id) {
         renderMessage(msg);
       } else if (msg.channel_id) {
@@ -895,6 +903,9 @@ function handleWsEvent(event: WsEvent): void {
     case "project:agent_changed":
       handleProjectWsEvent(event.type, event.data);
       loadSidebarProjects();
+      break;
+    default:
+      // Unknown event types are silently ignored
       break;
   }
 }

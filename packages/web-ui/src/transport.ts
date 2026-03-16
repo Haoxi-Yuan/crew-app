@@ -116,33 +116,41 @@ export class WsClient {
   private handlers: WsEventHandler[] = [];
   private statusHandlers: WsStatusHandler[] = [];
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private url: string;
+  private reconnectHandlers: Array<() => void> = [];
+  private fixedUrl: string | undefined;
   private disposed = false;
+  private reconnectAttempts = 0;
+  private static readonly MAX_BACKOFF_MS = 30000;
 
   constructor(url?: string) {
-    this.url = url || resolveWsUrl();
+    this.fixedUrl = url;
   }
 
   connect(): void {
     if (this.disposed) return;
     this.cleanup();
 
-    const ws = new WebSocket(this.url);
+    const url = this.fixedUrl || resolveWsUrl();
+    const ws = new WebSocket(url);
     this.ws = ws;
 
     ws.onopen = () => {
+      this.reconnectAttempts = 0;
       this.notifyStatus("connected");
+      for (const handler of this.reconnectHandlers) {
+        try { handler(); } catch { /* ignore */ }
+      }
     };
 
     ws.onclose = () => {
       this.notifyStatus("disconnected");
-      if (!this.disposed) {
-        this.reconnectTimer = setTimeout(() => this.connect(), 3000);
-      }
+      this.scheduleReconnect();
     };
 
     ws.onerror = () => {
       this.notifyStatus("error");
+      // Force close so onclose fires and triggers reconnect
+      try { this.ws?.close(); } catch { /* ignore */ }
     };
 
     ws.onmessage = (event) => {
@@ -155,6 +163,16 @@ export class WsClient {
         // Ignore non-JSON messages
       }
     };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.disposed) return;
+    const delay = Math.min(
+      1000 * Math.pow(2, this.reconnectAttempts),
+      WsClient.MAX_BACKOFF_MS,
+    );
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
   /** Subscribe to all WebSocket events. Returns unsubscribe function. */
@@ -173,11 +191,20 @@ export class WsClient {
     };
   }
 
+  /** Subscribe to reconnection events (fires after successful reconnect). */
+  onReconnect(handler: () => void): () => void {
+    this.reconnectHandlers.push(handler);
+    return () => {
+      this.reconnectHandlers = this.reconnectHandlers.filter((h) => h !== handler);
+    };
+  }
+
   dispose(): void {
     this.disposed = true;
     this.cleanup();
     this.handlers = [];
     this.statusHandlers = [];
+    this.reconnectHandlers = [];
   }
 
   private cleanup(): void {

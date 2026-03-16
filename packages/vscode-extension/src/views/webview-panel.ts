@@ -57,6 +57,13 @@ export class CrewWebViewPanel {
     this.update();
   }
 
+  /** Notify the WebView that the server state changed. */
+  static notifyServerState(state: "running" | "stopped"): void {
+    if (CrewWebViewPanel.instance) {
+      CrewWebViewPanel.instance.panel.webview.postMessage({ type: "server-state", state });
+    }
+  }
+
   private update(): void {
     this.panel.webview.html = this.getHtmlContent();
   }

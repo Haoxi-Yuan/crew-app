@@ -21,6 +21,8 @@ export class EventBridge {
   private port: number | null = null;
   private disposed = false;
   private outputChannel: vscode.OutputChannel;
+  private reconnectAttempts = 0;
+  private static readonly MAX_BACKOFF_MS = 30000;
 
   constructor(outputChannel: vscode.OutputChannel) {
     this.outputChannel = outputChannel;
@@ -59,13 +61,19 @@ export class EventBridge {
       this.ws = ws;
 
       ws.on("open", () => {
+        this.reconnectAttempts = 0;
         this.outputChannel.appendLine("[event-bridge] WebSocket connected");
       });
 
       ws.on("close", () => {
         this.outputChannel.appendLine("[event-bridge] WebSocket disconnected");
         if (!this.disposed && this.port) {
-          this.reconnectTimer = setTimeout(() => this.doConnect(), 3000);
+          const delay = Math.min(
+            1000 * Math.pow(2, this.reconnectAttempts),
+            EventBridge.MAX_BACKOFF_MS,
+          );
+          this.reconnectAttempts++;
+          this.reconnectTimer = setTimeout(() => this.doConnect(), delay);
         }
       });
 
