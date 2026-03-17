@@ -1,0 +1,12 @@
+--- Recent chat context in #project-parkour-game ---
+#1809 [project-system 01:49]: Project team update for parkour-game: architect was added to the project.
+Current project agents: architect (Game architecture designer)
+Only agents listed in the current project roster should be used for project delegation.
+If you cached an older team composition, refresh it now.
+--- End context ---
+
+[project-system in #project-parkour-game]: Project team update for parkour-game: coder was added to the project.
+Current project agents: architect (Game architecture designer), coder (Game developer)
+Only agents listed in the current project roster should be used for project delegation.
+If you cached an older team composition, refresh it now.
+(Reply using send_to_chat with channel="project-parkour-game")

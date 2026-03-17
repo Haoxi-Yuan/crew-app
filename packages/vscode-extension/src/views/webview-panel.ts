@@ -7,15 +7,18 @@ export class CrewWebViewPanel {
   private panel: vscode.WebviewPanel;
   private extensionUri: vscode.Uri;
   private _port: number;
+  private _target: { view?: "chat" | "dashboard"; channelId?: string; projectId?: string; peakId?: string } | null;
 
   private constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     port: number,
+    target?: { view?: "chat" | "dashboard"; channelId?: string; projectId?: string; peakId?: string },
   ) {
     this.panel = panel;
     this.extensionUri = extensionUri;
     this._port = port;
+    this._target = target || null;
 
     this.panel.onDidDispose(() => {
       CrewWebViewPanel.instance = undefined;
@@ -27,9 +30,11 @@ export class CrewWebViewPanel {
   static createOrShow(
     extensionUri: vscode.Uri,
     port: number,
+    target?: { view?: "chat" | "dashboard"; channelId?: string; projectId?: string; peakId?: string },
   ): CrewWebViewPanel {
     if (CrewWebViewPanel.instance) {
       CrewWebViewPanel.instance._port = port;
+      CrewWebViewPanel.instance._target = target || null;
       CrewWebViewPanel.instance.update();
       CrewWebViewPanel.instance.panel.reveal();
       return CrewWebViewPanel.instance;
@@ -48,7 +53,7 @@ export class CrewWebViewPanel {
       },
     );
 
-    CrewWebViewPanel.instance = new CrewWebViewPanel(panel, extensionUri, port);
+    CrewWebViewPanel.instance = new CrewWebViewPanel(panel, extensionUri, port, target);
     return CrewWebViewPanel.instance;
   }
 
@@ -111,10 +116,26 @@ export class CrewWebViewPanel {
   private getBridgeScript(): string {
     // Set base URLs for the transport layer (packages/web-ui/src/transport.ts).
     // Apply VS Code theme class to body for CSS variable overrides.
+    const serializedTarget = JSON.stringify(this._target || {});
     return `
       (function() {
         window.__CREW_BASE_URL = "http://127.0.0.1:${this._port}";
         window.__CREW_WS_URL = "ws://127.0.0.1:${this._port}/ws";
+
+        try {
+          var vscodeApi = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null;
+          if (vscodeApi) {
+            var existingState = vscodeApi.getState() || {};
+            var nextTarget = ${serializedTarget};
+            var nextState = Object.assign({}, existingState);
+            if (nextTarget.view) nextState.view = nextTarget.view;
+            if (nextTarget.channelId) nextState.channelId = nextTarget.channelId;
+            if (nextTarget.projectId) nextState.projectId = nextTarget.projectId;
+            vscodeApi.setState(nextState);
+          }
+        } catch (err) {
+          console.warn("Failed to seed Claude Crew webview state", err);
+        }
 
         // Apply VS Code theme class to body.
         // VS Code sets data-vscode-theme-kind on body (vscode-dark, vscode-light, etc.)

@@ -1,0 +1,20 @@
+--- Recent chat context in #project-parkour-game ---
+#1809 [project-system 01:49]: Project team update for parkour-game: architect was added to the project.
+Current project agents: architect (Game architecture designer)
+Only agents listed in the current project roster should be used for project delegation.
+If you cached an older team composition, refresh it now.
+#1810 [project-system 01:50]: Project team update for parkour-game: coder was added to the project.
+Current project agents: architect (Game architecture designer), coder (Game developer)
+Only agents listed in the current project roster should be used for project delegation.
+If you cached an older team composition, refresh it now.
+#1811 [architect 01:50]: architect 已加入 parkour-game 项目，角色：Game architecture designer。团队成员已刷新，当前项目 roster 仅 architect 一人，等待其他成员加入或用户分配任务。
+#1812 [coder 01:50]: 收到！coder 已加入 parkour-game 项目，角色：Game developer。当前团队：architect（架构设计）+ coder（开发实现）。等待任务分配，随时可以开工。
+#1813 [architect 01:50]: 团队更新已收到。当前 parkour-game 项目 roster：
+- **architect**（我）— 游戏架构设计
+- **coder** — 游戏开发
+
+@coder 欢迎加入！准备好后可以开始规划游戏架构。等用户给出具体需求。
+--- End context ---
+
+[coder in #project-parkour-game]: @architect 已就位！等你出架构方案，我负责实现。等用户需求。
+(Reply using send_to_chat with channel="project-parkour-game")

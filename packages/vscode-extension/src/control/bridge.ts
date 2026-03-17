@@ -11,6 +11,14 @@ import {
 } from "./runtime-registry.js";
 
 type ServerState = "starting" | "running" | "stopped";
+type CommandRequestBody = { command?: string; args?: unknown[] };
+type ActiveEditorSnapshot = {
+  active: boolean;
+  uri: string | null;
+  scheme: string | null;
+  isDirty: boolean;
+  text: string | null;
+};
 
 export class ControlBridge implements vscode.Disposable {
   private readonly token = crypto.randomBytes(24).toString("hex");
@@ -22,6 +30,7 @@ export class ControlBridge implements vscode.Disposable {
   private controlPort: number | null = null;
   private serverState: ServerState = "stopped";
   private disposed = false;
+  private readonly exposeTestEndpoints = process.env.CLAUDE_CREW_E2E === "1";
 
   constructor(
     context: vscode.ExtensionContext,
@@ -60,6 +69,9 @@ export class ControlBridge implements vscode.Disposable {
     this.controlPort = address.port;
     this.syncRuntimeFile();
     this.outputChannel.appendLine(`[claude-crew] Control bridge listening on 127.0.0.1:${address.port}`);
+    if (this.exposeTestEndpoints) {
+      this.outputChannel.appendLine("[claude-crew] Control bridge test editor endpoints enabled");
+    }
   }
 
   updateServerState(state: ServerState): void {
@@ -118,14 +130,30 @@ export class ControlBridge implements vscode.Disposable {
       }
 
       if (method === "POST" && url.pathname === "/command") {
-        const body = await this.readBody(req) as { command?: string; args?: unknown[] };
+        const body = await this.readBody(req) as CommandRequestBody;
         if (!body.command || !body.command.startsWith("claude-crew.")) {
           this.sendJson(res, 400, { error: "command must start with claude-crew." });
           return;
         }
-        const result = await vscode.commands.executeCommand(body.command, ...(body.args || []));
+        const result = await vscode.commands.executeCommand(body.command, ...this.reviveArgs(body.args || []));
         this.syncRuntimeFile();
         this.sendJson(res, 200, { ok: true, result: result ?? null });
+        return;
+      }
+
+      if (this.exposeTestEndpoints && method === "GET" && url.pathname === "/editor/active") {
+        this.sendJson(res, 200, this.getActiveEditorSnapshot());
+        return;
+      }
+
+      if (this.exposeTestEndpoints && method === "POST" && url.pathname === "/editor/replace-and-save") {
+        const body = await this.readBody(req) as { text?: string };
+        if (typeof body.text !== "string") {
+          this.sendJson(res, 400, { error: "text is required" });
+          return;
+        }
+        const snapshot = await this.replaceAndSaveActiveDocument(body.text);
+        this.sendJson(res, 200, snapshot);
         return;
       }
 
@@ -166,6 +194,70 @@ export class ControlBridge implements vscode.Disposable {
       "Content-Length": Buffer.byteLength(payload),
     });
     res.end(payload);
+  }
+
+  private reviveArgs(values: unknown[]): unknown[] {
+    return values.map((value) => this.reviveValue(value));
+  }
+
+  private reviveValue(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.reviveValue(item));
+    }
+    if (!value || typeof value !== "object") {
+      return value;
+    }
+    if (this.isUriLike(value)) {
+      return vscode.Uri.from({
+        scheme: value.scheme,
+        authority: value.authority || "",
+        path: value.path,
+        query: value.query || "",
+        fragment: value.fragment || "",
+      });
+    }
+    const entries = Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, this.reviveValue(item)]);
+    return Object.fromEntries(entries);
+  }
+
+  private isUriLike(value: unknown): value is { scheme: string; path: string; authority?: string; query?: string; fragment?: string } {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value as Record<string, unknown>;
+    return typeof candidate.scheme === "string" && typeof candidate.path === "string";
+  }
+
+  private getActiveEditorSnapshot(): ActiveEditorSnapshot {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return { active: false, uri: null, scheme: null, isDirty: false, text: null };
+    }
+    return {
+      active: true,
+      uri: editor.document.uri.toString(true),
+      scheme: editor.document.uri.scheme,
+      isDirty: editor.document.isDirty,
+      text: editor.document.getText(),
+    };
+  }
+
+  private async replaceAndSaveActiveDocument(text: string): Promise<ActiveEditorSnapshot> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      throw new Error("No active text editor.");
+    }
+    const document = editor.document;
+    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
+    const changed = await editor.edit((editBuilder) => {
+      editBuilder.replace(fullRange, text);
+    });
+    if (!changed) {
+      throw new Error("Failed to update the active document.");
+    }
+    const saved = await document.save();
+    if (!saved) {
+      throw new Error("Failed to save the active document.");
+    }
+    return this.getActiveEditorSnapshot();
   }
 
   private buildRuntimeRecord(): VscodeRuntimeRecord {

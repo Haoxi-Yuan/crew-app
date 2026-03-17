@@ -1,0 +1,236 @@
+{
+  "total": 38,
+  "passes": 38,
+  "failures": 0,
+  "duration": 37397,
+  "results": [
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Activation extension should be present",
+      "state": "passed",
+      "duration": 0,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Activation extension should activate",
+      "state": "passed",
+      "duration": 80,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Activation server should start (auto-start or manual)",
+      "state": "passed",
+      "duration": 5007,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Agent Tree View (Activity Bar) register test agent -> tree updates",
+      "state": "passed",
+      "duration": 3011,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Agent Tree View (Activity Bar) update agent role -> tree refreshes with new role",
+      "state": "passed",
+      "duration": 2514,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Agent Tree View (Activity Bar) agent status icons: online=green, offline=gray",
+      "state": "passed",
+      "duration": 2,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Agent Tree View (Activity Bar) agent contextValue matches status-provider pattern",
+      "state": "passed",
+      "duration": 1,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Project Tree View (Activity Bar) create project -> tree updates",
+      "state": "passed",
+      "duration": 2517,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Project Tree View (Activity Bar) assign agent to project -> tree refreshes",
+      "state": "passed",
+      "duration": 2011,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Project Tree View (Activity Bar) update project -> tree refreshes",
+      "state": "passed",
+      "duration": 1509,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Project Tree View (Activity Bar) delete project -> tree removes item",
+      "state": "passed",
+      "duration": 2018,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Shared Files Tree View (Activity Bar) write shared file -> tree updates",
+      "state": "passed",
+      "duration": 2015,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Shared Files Tree View (Activity Bar) delete shared file -> tree updates",
+      "state": "passed",
+      "duration": 1509,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Status Bar shows online agent count",
+      "state": "passed",
+      "duration": 2,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Status Bar approval badge increments on approval:pending",
+      "state": "passed",
+      "duration": 0,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E WebSocket Event -> VSCode UI Feedback agent:status -> agent tree refresh + status bar update",
+      "state": "passed",
+      "duration": 3013,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E WebSocket Event -> VSCode UI Feedback approval:pending -> warning notification + status bar badge",
+      "state": "passed",
+      "duration": 0,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E WebSocket Event -> VSCode UI Feedback peak:pending -> info notification with Open Panel action",
+      "state": "passed",
+      "duration": 0,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E WebSocket Event -> VSCode UI Feedback mention:pending -> info notification",
+      "state": "passed",
+      "duration": 0,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E WebSocket Event -> VSCode UI Feedback project:* events -> project tree refresh",
+      "state": "passed",
+      "duration": 4518,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E WebSocket Event -> VSCode UI Feedback file:updated -> shared files tree refresh",
+      "state": "passed",
+      "duration": 2017,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Commands claude-crew.refreshAgents command exists",
+      "state": "passed",
+      "duration": 2,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Commands claude-crew.openPanel command exists",
+      "state": "passed",
+      "duration": 1,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Commands claude-crew.startServer command exists",
+      "state": "passed",
+      "duration": 1,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Commands claude-crew.configureAgent command exists",
+      "state": "passed",
+      "duration": 1,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Commands claude-crew.attachTerminal command exists",
+      "state": "passed",
+      "duration": 2,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Extension Commands all registered commands present",
+      "state": "passed",
+      "duration": 1,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E WebView Panel openPanel creates WebView with correct title",
+      "state": "passed",
+      "duration": 2007,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E PEAK System (VSCode notifications) escalate_peak triggers notification",
+      "state": "passed",
+      "duration": 2516,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Native Interaction Flows Inbox: resolve PEAK through VSCode command flow",
+      "state": "passed",
+      "duration": 545,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Native Interaction Flows Knowledge: searchMemory opens a memory document in the editor",
+      "state": "passed",
+      "duration": 217,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Native Interaction Flows Knowledge: openStandard opens editable virtual doc and save writes back",
+      "state": "passed",
+      "duration": 113,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Native Interaction Flows Knowledge: reviewReflection opens document and approves pending reflection",
+      "state": "passed",
+      "duration": 81,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Native Interaction Flows Shared Files: open in editor, edit, save, and read back updated content",
+      "state": "passed",
+      "duration": 114,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Backend Features (supporting API validation) memory_write + memory_read",
+      "state": "passed",
+      "duration": 6,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Backend Features (supporting API validation) standards create + list",
+      "state": "passed",
+      "duration": 5,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Backend Features (supporting API validation) reflection create + review",
+      "state": "passed",
+      "duration": 2,
+      "err": null
+    },
+    {
+      "title": "Claude Crew VSCode Extension E2E Cleanup deregister test agent",
+      "state": "passed",
+      "duration": 2,
+      "err": null
+    }
+  ]
+}

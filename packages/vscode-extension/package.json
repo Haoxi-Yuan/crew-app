@@ -6,7 +6,10 @@
   "publisher": "claude-crew",
   "license": "MIT",
   "icon": "media/icon.png",
-  "extensionKind": ["ui", "workspace"],
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -86,6 +89,73 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "claude-crew.openInbox",
+        "title": "Open Inbox",
+        "category": "Claude Crew",
+        "icon": "$(inbox)"
+      },
+      {
+        "command": "claude-crew.respondApproval",
+        "title": "Respond Approval",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.resolvePeak",
+        "title": "Resolve Peak",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.deferPeakToAgent",
+        "title": "Let Agent Decide",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.pausePeak",
+        "title": "Pause Peak",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.searchMemory",
+        "title": "Search Memory",
+        "category": "Claude Crew",
+        "icon": "$(search)"
+      },
+      {
+        "command": "claude-crew.openMemoryEntry",
+        "title": "Open Memory Entry",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.openStandard",
+        "title": "Open Standard",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.editStandard",
+        "title": "Edit Standard",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.reviewReflection",
+        "title": "Review Reflection",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.setActiveProject",
+        "title": "Set Active Project",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.setActiveWorkplace",
+        "title": "Set Active Workplace",
+        "category": "Claude Crew"
+      },
+      {
+        "command": "claude-crew.openSharedFile",
+        "title": "Open Shared File",
+        "category": "Claude Crew"
+      },
+      {
         "command": "claude-crew.configureAgent",
         "title": "Configure Agent",
         "category": "Claude Crew",
@@ -112,6 +182,14 @@
           "name": "Projects"
         },
         {
+          "id": "claude-crew-inbox",
+          "name": "Inbox"
+        },
+        {
+          "id": "claude-crew-knowledge",
+          "name": "Knowledge"
+        },
+        {
           "id": "claude-crew-shared-files",
           "name": "Shared Files"
         }
@@ -127,6 +205,16 @@
         {
           "command": "claude-crew.refreshProjects",
           "when": "view == claude-crew-projects",
+          "group": "navigation"
+        },
+        {
+          "command": "claude-crew.openInbox",
+          "when": "view == claude-crew-inbox",
+          "group": "navigation"
+        },
+        {
+          "command": "claude-crew.searchMemory",
+          "when": "view == claude-crew-knowledge",
           "group": "navigation"
         }
       ],
@@ -175,6 +263,36 @@
           "command": "claude-crew.openAgentChat",
           "when": "viewItem =~ /^agent-/",
           "group": "2_navigation"
+        },
+        {
+          "command": "claude-crew.setActiveProject",
+          "when": "viewItem == project-item",
+          "group": "1_actions"
+        },
+        {
+          "command": "claude-crew.setActiveWorkplace",
+          "when": "viewItem == workplace-item",
+          "group": "1_actions"
+        },
+        {
+          "command": "claude-crew.respondApproval",
+          "when": "viewItem == approval-item",
+          "group": "1_actions"
+        },
+        {
+          "command": "claude-crew.resolvePeak",
+          "when": "viewItem == peak-item",
+          "group": "1_actions"
+        },
+        {
+          "command": "claude-crew.openSharedFile",
+          "when": "viewItem == shared-file-item",
+          "group": "2_navigation"
+        },
+        {
+          "command": "claude-crew.openStandard",
+          "when": "viewItem == standard-item",
+          "group": "2_navigation"
         }
       ]
     },
@@ -200,6 +318,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically start server when extension activates."
+        },
+        "claude-crew.debug.nativeSaves": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log native Claude Crew document open/read/write/save operations to the Claude Crew output channel."
         }
       }
     }
@@ -209,13 +332,19 @@
     "build:full": "pnpm --filter @claude-crew/server build && pnpm --filter @claude-crew/web-ui build && bash scripts/copy-assets.sh && node esbuild-server.mjs && node esbuild.config.mjs",
     "copy-assets": "bash scripts/copy-assets.sh",
     "watch": "node esbuild.config.mjs --watch",
+    "test:build": "node esbuild.config.mjs && node esbuild-test.mjs",
+    "test:e2e": "node esbuild.config.mjs && node esbuild-test.mjs && node dist/test/runTest.js",
     "package": "vsce package"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.18.1",
+    "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.24.0",
+    "glob": "^13.0.6",
+    "mocha": "^11.7.5",
     "typescript": "^5.7.0"
   },
   "dependencies": {

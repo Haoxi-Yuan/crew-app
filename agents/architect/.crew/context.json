@@ -1,0 +1,33 @@
+{
+  "agent_name": "architect",
+  "agent_dir": "/Users/yuan/Projects/claude-crew/agents/architect",
+  "project": {
+    "id": "45adccff-a1b5-4799-b41f-84d6f62a4c24",
+    "name": "parkour-game",
+    "slug": "parkour-game",
+    "directory": "/Users/yuan/Projects/parkour-game"
+  },
+  "workplace": {
+    "id": "b5953760-e860-4cf2-8a1e-95f18c7b943d",
+    "name": "Default Workplace",
+    "slug": "default",
+    "directory": "/Users/yuan/Projects/parkour-game/.claude-crew/workplaces/default",
+    "kind": "derived"
+  },
+  "project_agents": [
+    {
+      "name": "architect",
+      "role_in_project": "Game architecture designer",
+      "assignment_type": "shared"
+    },
+    {
+      "name": "coder",
+      "role_in_project": "Game developer",
+      "assignment_type": "shared"
+    }
+  ],
+  "pointers": {
+    "current_project": "/Users/yuan/Projects/claude-crew/agents/architect/.crew/current-project",
+    "current_workplace": "/Users/yuan/Projects/claude-crew/agents/architect/.crew/current-workplace"
+  }
+}

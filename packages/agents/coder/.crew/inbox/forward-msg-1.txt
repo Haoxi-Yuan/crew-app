@@ -1,0 +1,35 @@
+[author in #project-parkour-game]: @architect @coder 
+
+## Parkour Game Project - Task Assignment
+
+### Phase 1: @architect Design (deliver in shared file)
+Design the architecture for a small HTML5 Canvas parkour running game:
+- Single-file `index.html` (HTML5 + Canvas + vanilla JS, no frameworks)
+- Endless side-scrolling runner, character auto-runs right
+- Player clicks/presses space to jump (support double-jump)
+- Random platform and obstacle generation (spikes, gaps)
+- Collision detection (hit obstacle or fall = game over)
+- Real-time score (distance) and high score display
+- 60fps smooth rendering, responsive screen sizing
+- Game states: start screen, playing, game over with restart
+
+Write the full architecture spec to shared file `parkour-game/architecture.md` including:
+1. Game loop design
+2. Core classes (Player, Platform, Obstacle, Camera, ScoreManager, Game)
+3. Collision detection approach
+4. Level generation algorithm
+5. Complete file structure
+
+### Phase 2: @coder Implementation (after architect delivers)
+Once architecture.md is ready, implement the complete game as a single `index.html` file. Write the finished file to: `/Users/yuan/Projects/parkour-game/index.html`
+
+Requirements:
+- Follow the architecture spec exactly
+- Pixel-art style character (drawn with Canvas primitives, no external assets)
+- Smooth animations and particle effects on jump/death
+- Background parallax scrolling layers
+- Progressive difficulty (speed increases over time)
+- Must be playable immediately by opening in browser
+
+@architect please start now. @coder wait for the architecture file then implement.
+(Reply using send_to_chat with channel="project-parkour-game")
