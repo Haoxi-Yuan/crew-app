@@ -6,3 +6,6 @@ bin/ollama
 *.db
 *.log
 .DS_Store
+*.vsix
+.vscode-test/
+app/.cache/
